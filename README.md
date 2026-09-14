@@ -15,6 +15,15 @@ cp machine-config-inference.yml.example machine-config.yml
 
 That's it. You get llama.cpp compiled for your GPU, llama-swap hot-swapping models at `:9292`, a ChatGPT-style web UI at `:3333`, dashboards at `:3100` — with hardened SSH and UFW firewall rules on the way.
 
+**Two configuration files, two concerns:**
+
+| File | Purpose |
+|------|---------|
+| `machine-config.yml` | **Infrastructure** — which services to install, their env vars & args |
+| `models.yml` | **Model catalog** — which LLMs to download, serve, and wire into coding agents |
+
+Both are YAML-driven and fully documented below.
+
 ```mermaid
 graph LR
     A[Coding Agent] -->|"OpenAI-compatible API"| B[llama-swap :9292]
@@ -79,6 +88,15 @@ The agent will read the README and discover available scripts on its own, then g
 - **Re-run policy: converge by default** - Re-running a task script against an existing stack converges it: config is re-rendered, existing secrets are reused, and `docker compose up -d` reconciles only what changed — no tear-down, no silent skip. Divergence that cannot be applied to a running stack is printed with the exact re-create command (see `specification/project/conventions.md` → *Re-run policy: converge by default*).
 
 ## Configuration
+
+This project uses **two YAML configuration files**, each governing a different concern:
+
+| File | Controls |
+|------|----------|
+| `machine-config.yml` | Which **services** to install, their env vars & args (infrastructure) |
+| `models.yml` | Which **LLMs** to download, serve, and wire into coding agents (model catalog) |
+
+### Infrastructure Config (`machine-config.yml`)
 
 The orchestrator reads `machine-config.yml` to determine which setup scripts to run. A fresh copy is provided as `machine-config.yml.example` — copy it to `machine-config.yml` before running `run-setup.sh apply`:
 
@@ -152,6 +170,144 @@ When run without any arguments, `run-setup.sh` prints usage instructions.
 
 All service setup scripts are located in the `tasks/` directory. 
 For a complete list of automations see [AUTOMATIONS.md](AUTOMATIONS.md)
+
+---
+
+## Model Catalog & Model Sync (`sync-models`)
+
+Besides installing the stack, this repository supports **configuring LLMs on an already-provisioned inference server** via a declarative **model catalog** (`models.yml`) and the Python sync tool [`tasks/sync-models.py`](tasks/sync-models.py) (the `sync_models/` package).
+
+> **Relationship to `machine-config.yml`:** `machine-config.yml` controls *which services to install* (infrastructure). `models.yml` controls *which models to download and serve* (content). After running `./run-setup.sh apply` with `setup-llama-swap`, `setup-pi`, and `setup-opencode-server` enabled, you use `models.yml` to populate the inference server with actual models.
+
+### Two-stage workflow
+
+1. **Fresh box** — after `setup-llama-swap.sh`, `setup-pi.sh` and `setup-opencode-server.sh`, just run `./tasks/sync-models.py`. The committed `models.yml.default` is a real, downloadable local model set, so a local model works out of the box (it is downloaded via the `hf` CLI and served by llama-swap).
+2. **Remote providers** — add external OpenAI-compatible providers with real API keys later: `cp models.yml.default models.yml`, edit `apiKey`/models, and re-run the tool — the agent provider blocks converge to the catalog on the next run.
+
+### Getting started
+
+```bash
+# 1. Copy the default catalog (contains a real, downloadable model)
+cp models.yml.default models.yml
+
+# 2. Run the sync tool (downloads weights, configures llama-swap + agents)
+./tasks/sync-models.py
+
+# Or use a custom catalog path:
+MODELS_YML=/path/to/my-catalog.yml ./tasks/sync-models.py
+
+# Or only update agent configs (skip llama-swap):
+./tasks/sync-models.py --agents-only
+```
+
+**Catalog resolution order:** `$MODELS_YML` → `models.yml` → `models.yml.default`
+
+`models.yml` is **gitignored** (it may contain API keys). `models.yml.default` and `models.yml.example` are committed — copy whichever suits your needs.
+
+### Catalog Schema (`models.yml`)
+
+```yaml
+# Environment variables expanded into download/serve commands.
+# Reserved names (PORT, MODEL_ID, PID) may not be used here.
+env:
+  - name: MODEL_DIR
+    value: ${HOME}/.cache/huggingface/hub
+
+providers:
+  - name: local
+    baseUrl: http://localhost:9292/v1
+    apiKey: sk-replace-with-your-key
+    models:
+      - name: qwen3.8-27b
+        type: local          # or "remote"
+        env:                 # optional per-model env (extends top-level)
+          - name: EXAMPLE_FLAG
+            value: "--flash-attn on"
+        download:            # required for type: local (list of shell cmds)
+          - >-
+            hf download
+            hf://unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+            --local-dir ${MODEL_DIR}/unsloth/Qwen3.8-27B-GGUF
+        serve:               # required for type: local
+          cmd: |
+            ${llama-server-bin}
+            --port ${PORT}
+            -m ${MODEL_DIR}/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+            --ctx-size 128000
+            --jinja
+        agent:               # optional — agent metadata defaults below
+          contextWindow: 262144
+          maxTokens: 32000
+          reasoning: true
+          input: [text, image]
+          thinkingLevelMap:
+            minimal: null
+            low: low
+            medium: medium
+            high: null
+            xhigh: xhigh
+            max: null
+
+  - name: remote
+    baseUrl: http://192.168.0.57:9292/v1
+    apiKey: sk-remote-key
+    models:
+      - name: qwen3.8-27b
+        type: remote         # no download/serve allowed
+        agent:
+          contextWindow: 262144
+          maxTokens: 32000
+          reasoning: true
+```
+
+**Schema rules:**
+
+| Level | Key | Required | Description |
+|-------|-----|----------|-------------|
+| Top | `env` | No | Variables expanded into download/serve commands |
+| Top | `providers` | Yes | List of provider blocks |
+| Provider | `name` | Yes | Provider identifier |
+| Provider | `baseUrl` | Yes | OpenAI-compatible API base URL |
+| Provider | `apiKey` | No | API key (omit if no auth) |
+| Provider | `models` | Yes | List of model blocks |
+| Model | `name` | Yes | Model name (unique within local llama-swap namespace) |
+| Model | `type` | Yes | `local` or `remote` |
+| Model | `env` | No | Per-model env vars (extends top-level `env`) |
+| Model | `download` | Local only | Shell commands to download weights |
+| Model | `serve` | Local only | llama-swap serve command (`cmd` field) |
+| Model | `agent` | No | Agent metadata (all fields optional) |
+| Agent | `contextWindow` | No | Default `200000` |
+| Agent | `maxTokens` | No | Default `16000` |
+| Agent | `reasoning` | No | Default `true` |
+| Agent | `input` | No | Default `[text]` |
+| Agent | `thinkingLevelMap` | No | Maps thinking levels to model params (`null` = disabled) |
+
+**Type rules:**
+- `type: local` — requires non-empty `download` and `serve.cmd`. Sync downloads weights via `hf` CLI and merges the serve command into llama-swap config.
+- `type: remote` — must NOT define `download`/`serve`. The provider serves weights elsewhere; only agent metadata is consumed.
+
+**Variable expansion:**
+- `${MODEL_DIR}` and any `env:` entry are expanded by sync into download/serve commands
+- `${llama-server-bin}` is a llama-swap macro from the live config (left verbatim)
+- `${PORT}` is a reserved llama-swap macro
+- Long `-m` paths may use backslash line continuation
+
+### Sync Configuration (environment variables & flags)
+
+| Variable / Flag | Default | Purpose |
+|-----------------|---------|---------|
+| `MODELS_YML` | — | explicit catalog path; resolution: `$MODELS_YML` → `models.yml` → `models.yml.default` |
+| `LLAMA_SWAP_CONFIG` | `/srv/llama-swap/config/config.yaml` | llama-swap config path |
+| `PI_MODELS_JSON` | `$HOME/.pi/agent/models.json` | pi model config path |
+| `OPENCODE_CONFIG` | `$HOME/.config/opencode/opencode.json` | opencode config path |
+| `LLAMA_SWAP_HEALTH_TIMEOUT` | `500` | post-restart health poll timeout in seconds |
+| `--no-restart` | — | do not restart llama-swap even if its config changed |
+| `--agents pi,opencode` | all detected | restrict agent sync to the listed agents |
+| `--agents-only` | — | only update agent model configs (skip llama-swap + downloads) |
+
+> **Idempotency:** re-runs are no-ops — the tool is strictly additive. It adds missing entries and fixes managed fields, never removes or rewrites entries it does not own.
+>
+> **Deprovisioning:** removing a model from the catalog does **not** remove its entries from the agent/llama-swap configs — edit those manually.
 
 ---
 

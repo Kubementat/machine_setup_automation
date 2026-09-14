@@ -262,6 +262,13 @@ scripts:
     description: Install pi coding agent
     env: {}
     args: []
+  sync-models:
+    enabled: false
+    description: >-
+      Sync model catalog (models.yml) into llama-swap + pi/opencode configs
+      (Python)
+    env: {}
+    args: []
   setup-deepseek-harness:
     enabled: false
     description: Install NVM + Node.js toolchain for the DeepSeek harness (dsh)

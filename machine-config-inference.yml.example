@@ -116,6 +116,13 @@ scripts:
       NVM_DIR: $HOME/.nvm
     args: []
 
+  sync-models:
+    enabled: true
+    description: >-
+      Sync model catalog (models.yml) into llama-swap + pi/opencode configs
+    env: {}
+    args: []
+
   setup-vllm:
     enabled: true
     description: Deploy vLLM as Docker-based OpenAI-compatible inference server

@@ -44,6 +44,7 @@ ALWAYS lint created or modified files with the following tools:
 - `.yml` -> use `yamllint`
 - json (`.js`, `.json`) -> use `jq`
 - `Dockerfile` -> use hadolint via executing: docker run --rm -i hadolint/hadolint < Dockerfile
+- python (`.py`) -> use `ruff check` (fallback: `python3 -m py_compile` on every new/changed file)
 
 ### Testing
 - For running automation tests use the virtual machine based testing approach as described in ./tests/README.md

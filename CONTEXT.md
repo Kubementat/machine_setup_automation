@@ -31,6 +31,7 @@
 - **vllm-omni** — vLLM sub-project extending inference to omni-modality models (TTS, diffusion, image/video generation, any-to-any); served via `vllm serve <model> --omni`
 - **nanobot** — long-running AI agent in OpenClaw style
 - **whispering** — speech recognition tool for transcribing recorded audio to text
+- **model catalog** — the declarative model list (`models.yml`, gitignored, or the committed fallback `models.yml.default`); consumed by `tasks/sync-models.py` to download weights and configure llama-swap and the coding agents' model configs
 
 ### Services
 

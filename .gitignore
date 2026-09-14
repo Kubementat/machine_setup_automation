@@ -11,5 +11,6 @@ __pycache__/
 .tickets/
 tests/reports/
 machine-config.yml
+models.yml
 .pi-subagents/
 .omo/

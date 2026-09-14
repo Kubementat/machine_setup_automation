@@ -213,6 +213,9 @@ UNSLOTH_STUDIO_PORT=9000 UNSLOTH_STUDIO_BIND=0.0.0.0 ./tasks/setup-unsloth.sh
 #### `setup-pi.sh`
 Installs the latest Node.js via nvm and the **Pi coding agent** npm package globally.
 
+#### `sync-models.py`
+Python tool (entrypoint + `sync_models/` package) implementing the declarative **model catalog**: downloads local model weights via the `hf` CLI (`--dry-run` probe, idempotent `--local-dir` mode, disk-space warning), additively appends missing model entries to the llama-swap `config.yaml` (existing entries and all other sections are never modified), restarts llama-swap only when the config changed and polls `/health` afterwards, and merges catalog providers/models into `~/.pi/agent/models.json` and `~/.config/opencode/opencode.json` (add missing, fix managed fields, touch nothing else). Strictly additive and idempotent. Catalog resolution: `MODELS_YML` → `models.yml` (gitignored) → `models.yml.default`; env vars `LLAMA_SWAP_CONFIG`, `PI_MODELS_JSON`, `OPENCODE_CONFIG`, `LLAMA_SWAP_HEALTH_TIMEOUT`; flags `--no-restart`, `--agents pi,opencode`.
+
 #### `setup-deepseek-harness.sh`
 Installs **DeepSeek Harness** (`dsh`) — an open-source agent harness from DeepSeek AI with a plugin-first architecture. Ensures NVM + Node.js 22.19+ are available, then installs `dsh` globally. Run `dsh web` afterwards for the Web UI at `http://127.0.0.1:3080`.
 

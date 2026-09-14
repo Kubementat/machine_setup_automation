@@ -1,0 +1,119 @@
+---
+# Example model catalog for sync-models.py.
+#
+# Create your own by copying and adapting this file:
+#   cp models.yml.example models.yml
+# Then (re-)run:
+#   ./tasks/sync-models.py                # downloads + llama-swap + agents
+#   ./tasks/sync-models.py --agents-only  # only the agent model configs
+#
+# Catalog resolution order: $MODELS_YML > models.yml > models.yml.default
+# (models.yml is gitignored; this example and models.yml.default are committed).
+#
+# Schema — every key is validated up front and all violations are reported
+# together before anything is changed:
+#   top level: env, providers
+#   provider:  name, baseUrl, apiKey, models
+#   model:     name, type (local|remote), env, download, serve, agent
+#   agent:     contextWindow, maxTokens, reasoning, input, thinkingLevelMap
+#
+# type: local  -> requires a non-empty download (list of shell commands)
+#                 and a non-empty serve.cmd; sync downloads the weights and
+#                 merges a llama-swap model entry under the model name
+#                 (names are unique across all local models).
+# type: remote -> must NOT define download/serve; the provider serves the
+#                 weights, so only the agent metadata is consumed.
+#
+# Variable expansion:
+#   - ${MODEL_DIR} and any env: entry are expanded by sync into the
+#     download/serve commands
+#   - ${llama-server-bin} is a llama-swap macro from the live llama-swap
+#     config (left verbatim, defined by setup-llama-swap.sh)
+#   - ${PORT} is a reserved llama-swap macro
+#   - long -m paths may use a backslash line continuation (the shell joins
+#     the line break); keep the continuation at the same indentation
+#
+# Secrets: apiKey values live only in the gitignored models.yml and are
+# written into the agent configs by sync. Never commit them.
+
+# Environment variables expanded into download/serve commands.
+# Reserved names (PORT, MODEL_ID, PID) may not be used here.
+env:
+  - name: MODEL_DIR
+    value: ${HOME}/.cache/huggingface/hub
+
+providers:
+  # A provider is one llama-swap endpoint. All models listed under it are
+  # advertised to the agents via this baseUrl/apiKey pair.
+  - name: local
+    baseUrl: http://localhost:9292/v1
+    # llama-swap apiKey (apiKeys[0] in the live config). Omit this key
+    # entirely when the endpoint does not require authentication.
+    apiKey: sk-replace-with-your-llama-swap-key
+    models:
+      # A local model: sync downloads the weights (pinned revision) and
+      # merges the llama-swap serve command under this name.
+      - name: qwen3.8-27b
+        type: local
+        # Optional per-model env: extends the top-level env for this
+        # model's download/serve commands only.
+        env:
+          - name: EXAMPLE_FLAG
+            value: "--flash-attn on"
+        # One or more shell commands, run in order. Re-runs must be
+        # idempotent (hf download is a no-op once the pinned revision is
+        # cached).
+        download:
+          - >-
+            hf download
+            hf://unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+            --local-dir ${MODEL_DIR}/unsloth/Qwen3.8-27B-GGUF
+        serve:
+          # llama-swap serve command for this model.
+          cmd: |
+            ${llama-server-bin}
+            --port ${PORT}
+            -m ${MODEL_DIR}/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+            --ctx-size 262144
+            --jinja
+            --top-p '0.95'
+            --top-k '20'
+            --min-p '0.0'
+            --temp '1.0'
+            --verbose
+        # Agent metadata written into the coding agents' model configs.
+        # Every field is optional — defaults: contextWindow 200000,
+        # maxTokens 16000, reasoning true, input [text].
+        agent:
+          contextWindow: 262144
+          maxTokens: 32000
+          reasoning: true
+          input: [text, image]
+          # Maps agent thinking levels to model thinking parameters;
+          # null disables thinking for that level. Only managed by sync
+          # when present at all.
+          thinkingLevelMap:
+            minimal: null
+            low: low
+            medium: medium
+            high: null
+            xhigh: xhigh
+            max: null
+
+  # A remote provider serves its weights elsewhere (another machine's
+  # llama-swap, an SGLang/docker stack, ...). Its models are declared
+  # type: remote — no downloads, no merge into this machine's llama-swap
+  # config; the agents only get the baseUrl/apiKey and agent metadata.
+  - name: remote
+    baseUrl: http://<your-remote-machine-ip>:9292>/v1
+    apiKey: sk-replace-with-the-remote-llama-swap-key
+    models:
+      # A remote model: agent metadata only (download/serve are not
+      # allowed). The name may repeat a local model name; it is not part
+      # of the local llama-swap namespace.
+      - name: qwen3.8-27b
+        type: remote
+        agent:
+          contextWindow: 262144
+          maxTokens: 32000
+          reasoning: true
