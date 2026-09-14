@@ -78,6 +78,8 @@ Deploys llama-swap, a multi-model LLM proxy with hot-swap support, as a native s
 - Web UI at `/ui`
 - Health check endpoint at `/health`
 - Comprehensive config with all options documented
+- Loads extra config files from `LLAMA_SWAP_FRAGMENT_DIR` (default `/srv/llama-swap/conf.d`, `--config-dir`), so other tasks can add models without touching `config.yaml` — used by `setup-comfyui.sh` in llama-swap mode
+- Re-runs keep the binary and `config.yaml`, but converge the systemd unit
 
 #### `setup-colqwen.sh`
 Generates a ColQwen2.5 embedding-service Docker project (FastAPI + colpali-engine on an NVIDIA NGC PyTorch base image). Serves multi-vector embeddings (dim 128) for document images and text queries — the retrieval side of visual document RAG. The script only generates the project; build and start it yourself. Models are mounted read-only from the HF cache at the identical path (adapter `base_model_name_or_path` entries resolve) and are never downloaded (fully offline: `HF_HUB_OFFLINE=1`).
@@ -111,7 +113,7 @@ Deploys **vLLM-Omni** — the official vLLM sub-project for omni-modality servin
 - Idempotent; supports `--force` and `--check`
 
 #### `setup-comfyui.sh`
-Installs **ComfyUI** (node-based diffusion workflows for images and video) from a pinned release tag into a uv venv under `/srv/comfyui` and runs it as the `comfyui` systemd service. Tuned for NVIDIA DGX Spark (GB10, sm_121, aarch64); other NVIDIA GPUs take a generic path, machines without one get CPU wheels and `--cpu`.
+Installs **ComfyUI** (node-based diffusion workflows for images and video) from a pinned release tag into a uv venv under `/srv/comfyui`, and runs it either as its own `comfyui` systemd service or behind llama-swap (`COMFYUI_SUPERVISOR`). Tuned for NVIDIA DGX Spark (GB10, sm_121, aarch64); other NVIDIA GPUs take a generic path, machines without one get CPU wheels and `--cpu`.
 
 **Features:**
 - Guards against the documented install hazard: torch/torchvision/torchaudio come from the PyTorch cu130 index and are frozen into a constraints file, so ComfyUI's unpinned `requirements.txt` cannot replace them; a re-run repairs a replaced torch build
@@ -120,14 +122,16 @@ Installs **ComfyUI** (node-based diffusion workflows for images and video) from 
 - Removes conflicting OpenCV variants left behind by custom nodes
 - Optional SageAttention source build for GB10 (`COMFYUI_SAGE_BUILD=true`), rebuilt when torch changes
 - Loopback bind and no autostart by default (ComfyUI has no authentication; next to a loaded LLM it can exhaust unified memory)
+- `COMFYUI_SUPERVISOR=llama-swap`: ComfyUI becomes llama-swap's `comfyui_auto` model — `http://<host>:9292/comfyui/` starts it, requesting any other model stops it, so ComfyUI and an LLM never hold unified memory at the same time. Paths and user are read from the installed llama-swap unit (v249+); the config fragment is validated with `llama-swap -validate` before it is installed; ComfyUI still runs as `COMFYUI_USER` (via `setpriv`); an outdated loaded ComfyUI is unloaded instead of restarting llama-swap. Switching back to `systemd` removes everything the llama-swap mode installed
 - Idempotent; supports `--check`, `--force` and `--interactive`
 
-**Environment variables (all optional):** `COMFYUI_DIR`, `COMFYUI_REF` (default `v0.35.0`), `COMFYUI_USER`, `COMFYUI_LISTEN` (default `127.0.0.1`), `COMFYUI_PORT` (default `8188`), `COMFYUI_MODELS_DIR`, `COMFYUI_AUTOSTART` (default `false`), `COMFYUI_TORCH_INDEX_URL`, `COMFYUI_RESERVE_VRAM` (default `8`), `COMFYUI_DISABLE_PINNED_MEMORY`, `COMFYUI_EXTRA_ARGS`, `COMFYUI_SAGE_BUILD`, `COMFYUI_SAGE_REF` — see `--help` for all of them.
+**Environment variables (all optional):** `COMFYUI_SUPERVISOR` (`systemd` or `llama-swap`, default `systemd`), `COMFYUI_DIR`, `COMFYUI_REF` (default `v0.35.0`), `COMFYUI_USER`, `COMFYUI_LISTEN` (default `127.0.0.1`), `COMFYUI_PORT` (default `8188`), `COMFYUI_MODELS_DIR`, `COMFYUI_AUTOSTART` (default `false`), `COMFYUI_TORCH_INDEX_URL`, `COMFYUI_RESERVE_VRAM` (default `8`), `COMFYUI_DISABLE_PINNED_MEMORY`, `COMFYUI_EXTRA_ARGS`, `COMFYUI_SAGE_BUILD`, `COMFYUI_SAGE_REF` — see `--help` for all of them.
 
 ```bash
 ./tasks/setup-comfyui.sh                          # install / converge
 ./tasks/setup-comfyui.sh --check                  # verify, change nothing
 COMFYUI_AUTOSTART=true ./tasks/setup-comfyui.sh   # also start at boot
+COMFYUI_SUPERVISOR=llama-swap ./tasks/setup-comfyui.sh   # behind llama-swap
 COMFYUI_REF=v0.36.0 ./tasks/setup-comfyui.sh      # upgrade ComfyUI
 ```
 

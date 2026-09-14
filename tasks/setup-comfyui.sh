@@ -6,7 +6,10 @@
 #
 # DESCRIPTION:
 #   Installs ComfyUI from a pinned release tag into a uv-managed venv and runs
-#   it as a systemd service. The script's main job is to encode a known-good
+#   it either as its own systemd service (COMFYUI_SUPERVISOR=systemd, default)
+#   or as the model comfyui_auto behind llama-swap (COMFYUI_SUPERVISOR=
+#   llama-swap), where opening /comfyui/ starts it and requesting any other
+#   model stops it. The script's main job is to encode a known-good
 #   combination of versions and flags for NVIDIA DGX Spark (GB10, sm_121,
 #   aarch64) so it does not have to be rediscovered on the next machine.
 #
@@ -33,11 +36,16 @@
 #   5. Cleans up conflicting OpenCV variants left behind by custom nodes
 #   6. Optionally builds SageAttention from source (GB10 only, opt-in)
 #   7. Verifies the install and records the resolved versions
-#   8. Renders the launcher and systemd unit, converges the service state
+#   8. Renders the launcher, then per supervisor:
+#      systemd    — renders comfyui.service and converges its state
+#      llama-swap — writes a validated config fragment and unit limits for
+#                   llama-swap, restarts it only when those change, and unloads
+#                   an outdated ComfyUI instead of restarting llama-swap
 #
 # IMPORTANT VARIABLES:
 #   COMFYUI_DIR                   - Service directory (default: /srv/comfyui)
 #   COMFYUI_REF                   - ComfyUI release tag (default: v0.35.0)
+#   COMFYUI_SUPERVISOR            - systemd | llama-swap (default: systemd)
 #   COMFYUI_USER                  - User the service runs as (default: invoking user)
 #   COMFYUI_LISTEN                - Bind address (default: 127.0.0.1 — ComfyUI has no auth)
 #   COMFYUI_PORT                  - Listen port (default: 8188)
@@ -51,18 +59,22 @@
 #   - envsubst:  template rendering (package: gettext-base)
 #   - systemctl: service management
 #   - apt-get:   ffmpeg (optional)
+#   - llama-swap v249+ with --config-dir, and setpriv (llama-swap mode only)
 #
 # OUTPUTS:
 #   - ${COMFYUI_DIR}/ComfyUI/            - ComfyUI checkout (models, custom_nodes, output)
 #   - ${COMFYUI_DIR}/.venv/              - Python environment
 #   - ${COMFYUI_DIR}/bin/comfyui-launch  - Launcher with the configured flags
 #   - ${COMFYUI_DIR}/state/              - constraints.txt, install-manifest
-#   - /etc/systemd/system/comfyui.service
+#   - /etc/systemd/system/comfyui.service             (systemd mode)
+#   - <llama-swap --config-dir>/50-comfyui.yaml         (llama-swap mode)
+#   - /etc/systemd/system/llama-swap.service.d/50-comfyui.conf (llama-swap mode)
 #
 # USAGE:
 #   ./setup-comfyui.sh                          # install / converge
 #   ./setup-comfyui.sh --check                  # verify, change nothing
 #   COMFYUI_AUTOSTART=true ./setup-comfyui.sh   # also start at boot
+#   COMFYUI_SUPERVISOR=llama-swap ./setup-comfyui.sh   # run behind llama-swap
 #   ./setup-comfyui.sh --force                  # rebuild the venv from scratch
 #   ./setup-comfyui.sh --help
 #
@@ -96,6 +108,7 @@ source "${LIB_PATH}" || {
 COMFYUI_DIR="${COMFYUI_DIR:-/srv/comfyui}"
 COMFYUI_REF="${COMFYUI_REF:-v0.35.0}"
 COMFYUI_REPO_URL="${COMFYUI_REPO_URL:-https://github.com/Comfy-Org/ComfyUI.git}"
+COMFYUI_SUPERVISOR="${COMFYUI_SUPERVISOR:-systemd}"
 COMFYUI_USER="${COMFYUI_USER:-${SUDO_USER:-${USER:-$(id -un)}}}"
 COMFYUI_LISTEN="${COMFYUI_LISTEN:-127.0.0.1}"
 COMFYUI_PORT="${COMFYUI_PORT:-8188}"
@@ -123,6 +136,14 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 MANAGED_MARKER="Managed by tasks/setup-comfyui.sh"
 OPENCV_VARIANTS=(opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless)
 
+# llama-swap mode. Paths and user are read from the installed llama-swap unit
+# (run-setup.sh gives each task only its own env), see read_llama_swap_unit.
+LLAMA_SWAP_SERVICE="llama-swap"
+LLAMA_SWAP_MIN_VERSION=249   # first release with the /comfyui/ endpoint
+LLAMA_SWAP_MODEL_ID="comfyui_auto"
+LLAMA_SWAP_DROPIN="/etc/systemd/system/${LLAMA_SWAP_SERVICE}.service.d/50-comfyui.conf"
+FRAGMENT_NAME="50-comfyui.yaml"
+
 CHECK_ONLY=0
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -133,19 +154,27 @@ usage() {
   cat <<EOF
 ${BOLD}Usage:${RESET} $0 [OPTIONS]
 
-Installs ComfyUI from a pinned release tag into a uv venv and runs it as a
-systemd service. Tuned for NVIDIA DGX Spark (GB10); other hardware takes a
-generic path (NVIDIA GPU) or a CPU path (no NVIDIA GPU).
+Installs ComfyUI from a pinned release tag into a uv venv and runs it either
+as its own systemd service or behind llama-swap. Tuned for NVIDIA DGX Spark
+(GB10); other hardware takes a generic path (NVIDIA GPU) or a CPU path.
 
 ${BOLD}Options:${RESET}
   --check        Verify the installation and service, change nothing;
                  exits non-zero if anything is wrong
-  --force        Rebuild the venv from scratch and restart the service
-  --interactive  Ask before restarting a running service (a restart kills
-                 the job ComfyUI is working on)
+  --force        Rebuild the venv from scratch and restart / unload ComfyUI
+  --interactive  Ask before restarting ComfyUI or llama-swap, or unloading
+                 ComfyUI (either kills the job ComfyUI is working on)
   -h, --help     Show this help and exit
 
 ${BOLD}Environment variables${RESET} (all optional):
+  COMFYUI_SUPERVISOR             Who runs ComfyUI (default: systemd)
+                                   systemd     own comfyui.service
+                                   llama-swap  model comfyui_auto behind llama-swap
+                                               (v249+, installed by setup-llama-swap.sh):
+                                               http://<host>:<llama-swap port>/comfyui/
+                                               starts it, any other model stops it.
+                                               Ignores COMFYUI_LISTEN, COMFYUI_PORT and
+                                               COMFYUI_AUTOSTART; switching back cleans up.
   COMFYUI_DIR                    Service directory (default: /srv/comfyui)
   COMFYUI_REF                    ComfyUI release tag to check out (default: v0.35.0)
                                  Upgrades are an explicit change of this value.
@@ -172,7 +201,7 @@ ${BOLD}Environment variables${RESET} (all optional):
                                  Rebuilt automatically when torch changes.
   COMFYUI_SAGE_REF               SageAttention commit SHA (default: ${COMFYUI_SAGE_REF:0:12})
   COMFYUI_SAGE_BUILD_JOBS        Parallel compile jobs for SageAttention (default: 4)
-  COMFYUI_WAIT_TIMEOUT           Seconds to wait for the service to answer (default: 180)
+  COMFYUI_WAIT_TIMEOUT           Seconds to wait for ComfyUI / llama-swap to answer (default: 180)
   FORCE                          Same as --force (default: 0)
   INTERACTIVE                    Same as --interactive (default: false)
 
@@ -180,6 +209,7 @@ ${BOLD}Examples:${RESET}
   ./setup-comfyui.sh
   ./setup-comfyui.sh --check
   COMFYUI_AUTOSTART=true ./setup-comfyui.sh
+  COMFYUI_SUPERVISOR=llama-swap ./setup-comfyui.sh
   COMFYUI_REF=v0.36.0 ./setup-comfyui.sh          # upgrade ComfyUI
   COMFYUI_SAGE_BUILD=true ./setup-comfyui.sh      # add SageAttention
 EOF
@@ -392,19 +422,209 @@ manifest_get() {
   sed -n "s/^$1=//p" "$MANIFEST" | head -1
 }
 
-# True when the running service predates one of its runtime inputs — also
-# catches a change from an earlier run whose restart was declined.
-restart_pending() {
-  local started file
-  started="$(systemctl show -p ActiveEnterTimestamp --value "$SERVICE_NAME" 2>/dev/null)"
-  [[ -n "$started" ]] || return 1
-  started="$(date -d "$started" +%s)"
-  for file in "$LAUNCHER" "$SERVICE_FILE" "$MANIFEST" "$EXTRA_PATHS"; do
+# True when any of the given files is newer than <epoch>.
+#   inputs_newer_than <epoch> <file...>
+inputs_newer_than() {
+  local started="$1" file
+  for file in "${@:2}"; do
     if [[ -f "$file" ]] && (( $(stat -c %Y "$file") > started )); then
       return 0
     fi
   done
   return 1
+}
+
+# Start time of an active systemd unit as epoch seconds; fails when inactive.
+unit_started_epoch() {
+  local started
+  started="$(systemctl show -p ActiveEnterTimestamp --value "$1" 2>/dev/null)"
+  [[ -n "$started" ]] || return 1
+  date -d "$started" +%s
+}
+
+# True when the running service predates one of its runtime inputs — also
+# catches a change from an earlier run whose restart was declined.
+restart_pending() {
+  local started
+  started="$(unit_started_epoch "$SERVICE_NAME")" || return 1
+  inputs_newer_than "$started" "$LAUNCHER" "$SERVICE_FILE" "$MANIFEST" "$EXTRA_PATHS"
+}
+
+# PID of a running ComfyUI (under either supervisor); empty when none.
+comfyui_pid() {
+  pgrep -o -f "^${VENV_PY} main.py" 2>/dev/null || true
+}
+
+# True when the ComfyUI process <pid> started before its launcher, manifest or
+# model paths last changed.
+comfyui_outdated() {
+  local elapsed
+  elapsed="$(ps -o etimes= -p "$1" 2>/dev/null | tr -d ' ')"
+  [[ -n "$elapsed" ]] || return 1
+  inputs_newer_than "$(( $(date +%s) - elapsed ))" "$LAUNCHER" "$MANIFEST" "$EXTRA_PATHS"
+}
+
+# Parses the installed llama-swap unit into LS_BIN, LS_CONFIG, LS_FRAGMENT_DIR,
+# LS_USER and LS_URL. run-setup.sh passes each task only its own env, so the
+# unit written by setup-llama-swap.sh is the one source of truth.
+read_llama_swap_unit() {
+  local argv listen="" host port i arg
+  local -a args
+  LS_BIN=""; LS_CONFIG=""; LS_FRAGMENT_DIR=""; LS_USER=""; LS_URL=""
+  if [[ "$(systemctl show -p LoadState --value "$LLAMA_SWAP_SERVICE" 2>/dev/null)" != "loaded" ]]; then
+    err_msg "llama-swap is not installed as a systemd service — run setup-llama-swap.sh first"
+    return 1
+  fi
+  argv="$(systemctl show -p ExecStart --value "$LLAMA_SWAP_SERVICE" | sed -n 's/.*argv\[\]=\([^;]*\);.*/\1/p')"
+  read -ra args <<< "$argv"
+  LS_BIN="${args[0]:-}"
+  for (( i = 1; i < ${#args[@]}; i++ )); do
+    arg="${args[i]}"
+    case "$arg" in
+      -config=*|--config=*)         LS_CONFIG="${arg#*=}" ;;
+      -config|--config)             LS_CONFIG="${args[++i]:-}" ;;
+      -config-dir=*|--config-dir=*) LS_FRAGMENT_DIR="${arg#*=}" ;;
+      -config-dir|--config-dir)     LS_FRAGMENT_DIR="${args[++i]:-}" ;;
+      -listen=*|--listen=*)         listen="${arg#*=}" ;;
+      -listen|--listen)             listen="${args[++i]:-}" ;;
+    esac
+  done
+  if [[ -z "$LS_BIN" || ! -x "$LS_BIN" ]]; then
+    err_msg "Cannot find the llama-swap binary in the unit's ExecStart (${argv:-empty})"
+    return 1
+  fi
+  LS_USER="$(systemctl show -p User --value "$LLAMA_SWAP_SERVICE" 2>/dev/null)"
+  LS_USER="${LS_USER:-root}"
+  listen="${listen:-:8080}"   # llama-swap's own default
+  host="${listen%:*}"
+  port="${listen##*:}"
+  if [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "[::]" ]]; then host="127.0.0.1"; fi
+  LS_URL="http://${host}:${port}"
+}
+
+# read_llama_swap_unit plus everything the llama-swap mode requires. Sets LS_VERSION.
+discover_llama_swap() {
+  read_llama_swap_unit || return 1
+  if [[ -z "$LS_FRAGMENT_DIR" ]]; then
+    err_msg "llama-swap runs without --config-dir — re-run setup-llama-swap.sh to add the fragment directory"
+    return 1
+  fi
+  LS_VERSION="$("$LS_BIN" -version 2>/dev/null | sed -nE 's/^version: v?([0-9]+).*/\1/p')"
+  if [[ -z "$LS_VERSION" ]] || (( LS_VERSION < LLAMA_SWAP_MIN_VERSION )); then
+    err_msg "llama-swap ${LS_VERSION:-of unknown version} is too old — /comfyui/ needs v${LLAMA_SWAP_MIN_VERSION}+ (update: setup-llama-swap.sh --force)"
+    return 1
+  fi
+}
+
+# Prints the cmd prefix that makes llama-swap start ComfyUI as COMFYUI_USER.
+# setpriv needs root; a non-root llama-swap can only run ComfyUI as itself.
+llama_swap_cmd_prefix() {
+  if [[ "$LS_USER" == "$COMFYUI_USER" ]]; then
+    echo ""
+  elif [[ "$LS_USER" == "root" ]]; then
+    echo "setpriv --reuid=${COMFYUI_USER} --regid=${COMFYUI_GROUP} --init-groups -- "
+  else
+    err_msg "llama-swap runs as ${LS_USER} and cannot start processes as COMFYUI_USER=${COMFYUI_USER} — run llama-swap as root or set COMFYUI_USER=${LS_USER}"
+    return 1
+  fi
+}
+
+# Prints the fragment for the given cmd prefix.
+render_fragment() {
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  COMFYUI_CMD_PREFIX="$1" COMFYUI_DIR="$COMFYUI_DIR" \
+    envsubst '${COMFYUI_CMD_PREFIX} ${COMFYUI_DIR}' < "${TEMPLATE_DIR}/llama-swap-fragment.yaml"
+}
+
+# Runs `llama-swap -validate` over config.yaml and the fragment directory. With
+# a <candidate> file it stands in for our fragment, so a change is validated
+# before it is installed. Prints llama-swap's verdict; returns its exit code.
+validate_llama_swap() {
+  local candidate="${1:-}" dir out rc=0 f
+  local -a config_args=()
+  dir="$(mktemp -d)"
+  for f in "$LS_FRAGMENT_DIR"/*.yml "$LS_FRAGMENT_DIR"/*.yaml; do
+    [[ -f "$f" ]] || continue
+    if [[ -n "$candidate" && "$(basename "$f")" == "$FRAGMENT_NAME" ]]; then continue; fi
+    cp "$f" "$dir/"
+  done
+  if [[ -n "$candidate" ]]; then cp "$candidate" "${dir}/${FRAGMENT_NAME}"; fi
+  if [[ -n "$LS_CONFIG" ]]; then config_args=(-config "$LS_CONFIG"); fi
+  out="$("$LS_BIN" -validate "${config_args[@]}" -config-dir "$dir" 2>&1)" || rc=$?
+  rm -rf "$dir"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+# Restarts llama-swap and waits for /health (unauthenticated). A restart
+# unloads every model, so it happens only when llama-swap's own inputs changed.
+restart_llama_swap() {
+  local elapsed=0
+  if ! systemctl is-active --quiet "$LLAMA_SWAP_SERVICE"; then
+    info "llama-swap is not running — the change applies when it starts"
+    return 0
+  fi
+  if is_true "$INTERACTIVE" && ! confirm "Restart llama-swap now ($1)? Every loaded model is unloaded."; then
+    warn "llama-swap not restarted — apply later with: sudo systemctl restart ${LLAMA_SWAP_SERVICE}"
+    return 0
+  fi
+  warn "Restarting llama-swap ($1) — every loaded model is unloaded"
+  sudo systemctl restart "$LLAMA_SWAP_SERVICE"
+  until curl -fs -o /dev/null --max-time 5 "${LS_URL}/health"; do
+    if systemctl is-failed --quiet "$LLAMA_SWAP_SERVICE" || (( elapsed >= COMFYUI_WAIT_TIMEOUT )); then
+      error "llama-swap did not come back — see: journalctl -u ${LLAMA_SWAP_SERVICE} -n 50"
+    fi
+    sleep 2
+    elapsed=$(( elapsed + 2 ))
+  done
+  success "llama-swap is back (${LS_URL}/health)"
+}
+
+# True when llama-swap started before the fragment or unit limits last changed
+# (e.g. a restart declined in an earlier --interactive run).
+llama_swap_restart_pending() {
+  local started
+  started="$(unit_started_epoch "$LLAMA_SWAP_SERVICE")" || return 1
+  inputs_newer_than "$started" "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" "$LLAMA_SWAP_DROPIN"
+}
+
+# Unloads the llama-swap-managed ComfyUI so its next start picks up changes.
+# The unload endpoint needs llama-swap's API key when apiKeys are set, which
+# this task does not hold — then the operator unloads it in the llama-swap UI.
+unload_comfyui() {
+  local code
+  if is_true "$INTERACTIVE" && ! confirm "ComfyUI is loaded in llama-swap; unload it now (kills any running job)?"; then
+    warn "Not unloaded — ComfyUI keeps running the previous state until its next start"
+    return 0
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST --max-time 60 \
+    "${LS_URL}/api/models/unload/${LLAMA_SWAP_MODEL_ID}" || true)"
+  case "$code" in
+    200) info "Unloaded ${LLAMA_SWAP_MODEL_ID} — the next visit to /comfyui/ starts the new state" ;;
+    401) warn "ComfyUI runs the previous state, and unloading it needs llama-swap's API key. Unload ${LLAMA_SWAP_MODEL_ID} in the llama-swap UI (${LS_URL}/ui)." ;;
+    *)   warn "Could not unload ${LLAMA_SWAP_MODEL_ID} (HTTP ${code:-no answer}) — unload it in the llama-swap UI (${LS_URL}/ui)" ;;
+  esac
+}
+
+# Removes what COMFYUI_SUPERVISOR=llama-swap installed (files carrying the
+# managed marker only). Returns 0 when something was removed.
+remove_llama_swap_integration() {
+  local removed=1 fragment
+  if read_llama_swap_unit 2>/dev/null && [[ -n "$LS_FRAGMENT_DIR" ]]; then
+    fragment="${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
+    if [[ -f "$fragment" ]] && grep -q "$MANAGED_MARKER" "$fragment"; then
+      sudo rm -f "$fragment"
+      info "Removed ${fragment} (COMFYUI_SUPERVISOR=systemd)"
+      removed=0
+    fi
+  fi
+  if [[ -f "$LLAMA_SWAP_DROPIN" ]] && grep -q "$MANAGED_MARKER" "$LLAMA_SWAP_DROPIN"; then
+    sudo rm -f "$LLAMA_SWAP_DROPIN"
+    sudo systemctl daemon-reload
+    info "Removed ${LLAMA_SWAP_DROPIN} (COMFYUI_SUPERVISOR=systemd)"
+    removed=0
+  fi
+  return "$removed"
 }
 
 confirm() {
@@ -482,6 +702,10 @@ fi
   || error "COMFYUI_RESERVE_VRAM must be a number of GB, got '${COMFYUI_RESERVE_VRAM}'"
 [[ "$COMFYUI_WAIT_TIMEOUT" =~ ^[0-9]+$ ]] \
   || error "COMFYUI_WAIT_TIMEOUT must be a number of seconds, got '${COMFYUI_WAIT_TIMEOUT}'"
+case "$COMFYUI_SUPERVISOR" in
+  systemd|llama-swap) info "Supervisor: ${COMFYUI_SUPERVISOR}" ;;
+  *) error "COMFYUI_SUPERVISOR must be 'systemd' or 'llama-swap', got '${COMFYUI_SUPERVISOR}'" ;;
+esac
 
 id "$COMFYUI_USER" &>/dev/null || error "COMFYUI_USER '${COMFYUI_USER}' does not exist"
 COMFYUI_GROUP="$(id -gn "$COMFYUI_USER")"
@@ -545,7 +769,72 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
     check_fail "No venv at ${VENV_DIR}"
   fi
 
-  if [[ -f "$SERVICE_FILE" ]]; then
+  if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
+    step "llama-swap integration"
+    if ! discover_llama_swap; then
+      check_fail "llama-swap integration cannot be checked (see above)"
+    else
+      success "llama-swap v${LS_VERSION} at ${LS_URL} (user ${LS_USER}, fragments in ${LS_FRAGMENT_DIR})"
+      if [[ -f "$SERVICE_FILE" ]]; then
+        check_fail "${SERVICE_FILE} is still installed — COMFYUI_SUPERVISOR=llama-swap does not use it"
+      fi
+      fragment="${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
+      if cmd_prefix="$(llama_swap_cmd_prefix)"; then
+        if [[ ! -f "$fragment" ]]; then
+          check_fail "No ComfyUI fragment at ${fragment}"
+        elif [[ "$(cat "$fragment")" != "$(render_fragment "$cmd_prefix")" ]]; then
+          check_fail "${fragment} is out of date"
+        else
+          success "Fragment up to date: ${fragment}"
+        fi
+      else
+        check_fail "ComfyUI cannot be started by llama-swap as ${COMFYUI_USER} (see above)"
+      fi
+      if validation="$(validate_llama_swap)"; then
+        success "llama-swap -validate: ${validation}"
+      else
+        check_fail "llama-swap -validate failed: ${validation}"
+      fi
+      if [[ -f "$LLAMA_SWAP_DROPIN" ]] && cmp -s "$LLAMA_SWAP_DROPIN" "${TEMPLATE_DIR}/llama-swap-dropin.conf"; then
+        success "Unit limits up to date: ${LLAMA_SWAP_DROPIN}"
+      else
+        check_fail "Unit limits missing or out of date: ${LLAMA_SWAP_DROPIN}"
+      fi
+      if llama_swap_restart_pending; then
+        check_fail "llama-swap runs an older configuration — restart pending (sudo systemctl restart ${LLAMA_SWAP_SERVICE})"
+      fi
+      # Never probe /comfyui/ itself: the root path would start ComfyUI.
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${LS_URL}/comfyui/system_stats" || true)"
+      case "$code" in
+        401)     success "llama-swap requires an API key for /comfyui/" ;;
+        200|409) warn "llama-swap has no apiKeys — /comfyui/ is open to everyone who reaches its port" ;;
+        404)     check_fail "llama-swap does not serve ${LLAMA_SWAP_MODEL_ID} — restart llama-swap" ;;
+        *)       check_fail "llama-swap did not answer /comfyui/system_stats (HTTP ${code:-no answer})" ;;
+      esac
+      pid="$(comfyui_pid)"
+      if [[ -n "$pid" ]]; then
+        owner="$(ps -o user= -p "$pid" | tr -d ' ')"
+        comm="$(ps -o comm= -p "$pid")"
+        parent="$(ps -o comm= -p "$(ps -o ppid= -p "$pid" | tr -d ' ')")"
+        if [[ "$owner" == "$COMFYUI_USER" && "$comm" == "python" && "$parent" == "llama-swap" ]]; then
+          success "ComfyUI loaded (pid ${pid}): user ${owner}, process python, parent llama-swap"
+        else
+          check_fail "ComfyUI loaded (pid ${pid}) as user ${owner}, process ${comm}, parent ${parent} — expected ${COMFYUI_USER}, python, llama-swap"
+        fi
+        if grep -qE '^Max locked memory +unlimited' "/proc/${pid}/limits" \
+           && grep -qE '^Max stack size +67108864' "/proc/${pid}/limits"; then
+          success "Unit limits in effect for ComfyUI"
+        else
+          check_fail "ComfyUI (pid ${pid}) does not run with the unit limits"
+        fi
+        if comfyui_outdated "$pid"; then
+          check_fail "Loaded ComfyUI predates its launcher/manifest — unload ${LLAMA_SWAP_MODEL_ID} (llama-swap UI)"
+        fi
+      else
+        info "ComfyUI is not loaded — open ${LS_URL}/comfyui/ to start it"
+      fi
+    fi
+  elif [[ -f "$SERVICE_FILE" ]]; then
     success "Unit installed: ${SERVICE_FILE}"
     enabled="$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true)"
     if is_true "$COMFYUI_AUTOSTART" && [[ "$enabled" != "enabled" ]]; then
@@ -570,6 +859,14 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
   else
     check_fail "Unit not installed: ${SERVICE_FILE}"
   fi
+  if [[ "$COMFYUI_SUPERVISOR" == "systemd" ]]; then
+    if read_llama_swap_unit 2>/dev/null && [[ -n "$LS_FRAGMENT_DIR" && -f "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" ]]; then
+      check_fail "Leftover from llama-swap mode: ${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
+    fi
+    if [[ -f "$LLAMA_SWAP_DROPIN" ]]; then
+      check_fail "Leftover from llama-swap mode: ${LLAMA_SWAP_DROPIN}"
+    fi
+  fi
 
   echo ""
   if [[ $CHECK_FAILED -eq 1 ]]; then
@@ -593,6 +890,16 @@ if [[ $EUID -ne 0 ]]; then
 fi
 resolve_uv || error "uv not found for user ${COMFYUI_USER} — run setup-basics.sh first"
 info "uv: ${UV}"
+
+if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
+  # Fail before the long install, not after it.
+  discover_llama_swap || error "COMFYUI_SUPERVISOR=llama-swap needs a suitable llama-swap (see above)"
+  COMFYUI_CMD_PREFIX="$(llama_swap_cmd_prefix)" || error "ComfyUI cannot be started by llama-swap (see above)"
+  if [[ -n "$COMFYUI_CMD_PREFIX" ]] && ! command -v setpriv &>/dev/null; then
+    error "setpriv (util-linux) is required to start ComfyUI as ${COMFYUI_USER} from llama-swap"
+  fi
+  info "llama-swap v${LS_VERSION} at ${LS_URL} (runs as ${LS_USER}, fragments in ${LS_FRAGMENT_DIR})"
+fi
 
 if [[ "$SAGE_ENABLED" == "true" ]]; then
   # The system default on the Spark is gcc 11; SageAttention needs gcc 13.
@@ -843,7 +1150,7 @@ fi
 # LAUNCHER AND SYSTEMD UNIT
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Launcher and systemd unit"
+step "Launcher"
 
 export COMFYUI_DIR COMFYUI_APP_DIR="$APP_DIR" COMFYUI_LAUNCH_ARGS COMFYUI_USER COMFYUI_GROUP
 
@@ -858,61 +1165,120 @@ else
 fi
 info "ComfyUI arguments: ${COMFYUI_LAUNCH_ARGS}"
 
-# shellcheck disable=SC2016  # envsubst expects the literal variable list
-if render_install "${TEMPLATE_DIR}/comfyui.service" "$SERVICE_FILE" 644 root:root \
-     '${COMFYUI_USER} ${COMFYUI_GROUP} ${COMFYUI_DIR} ${COMFYUI_APP_DIR}'; then
-  RUNTIME_CHANGED=1
-  sudo systemctl daemon-reload
-  success "Wrote ${SERVICE_FILE}"
-else
-  success "${SERVICE_FILE} up to date"
-fi
+if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
+  step "llama-swap integration"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SERVICE STATE
-# ─────────────────────────────────────────────────────────────────────────────
-
-step "Service state"
-
-if is_true "$COMFYUI_AUTOSTART"; then
-  if ! systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
-    sudo systemctl enable --quiet "$SERVICE_NAME"
-    success "Enabled at boot"
+  # Validate before installing: a broken merge would keep llama-swap from
+  # starting, and every other model with it.
+  FRAGMENT="${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
+  rendered_fragment="$(mktempfile "$FRAGMENT_NAME")"
+  render_fragment "$COMFYUI_CMD_PREFIX" > "$rendered_fragment"
+  if ! validation="$(validate_llama_swap "$rendered_fragment")"; then
+    printf '%s\n' "$validation" | sed 's/^/    /'
+    error "llama-swap rejects its configuration with the ComfyUI fragment — nothing changed. A hand-written ${LLAMA_SWAP_MODEL_ID} in ${LS_CONFIG:-config.yaml} is the usual cause."
   fi
-elif systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
-  sudo systemctl disable --quiet "$SERVICE_NAME"
-  info "Disabled at boot (COMFYUI_AUTOSTART=false)"
-fi
+  success "llama-swap -validate: ${validation}"
 
-if systemctl is-active --quiet "$SERVICE_NAME"; then
-  if (( RUNTIME_CHANGED )) || is_true "$FORCE" || restart_pending; then
-    if is_true "$INTERACTIVE" && ! confirm "ComfyUI is running; restart it now (kills any running job)?"; then
-      warn "Not restarted — changes apply at the next start: sudo systemctl restart ${SERVICE_NAME}"
-    else
-      sudo systemctl restart "$SERVICE_NAME"
-      info "Restarted to apply changes"
-    fi
+  # Only now retire the own unit: had validation failed, ComfyUI would have
+  # been left without any supervisor.
+  if [[ -f "$SERVICE_FILE" ]]; then
+    sudo systemctl disable --now --quiet "$SERVICE_NAME" 2>/dev/null || true
+    sudo rm -f "$SERVICE_FILE"
+    sudo systemctl daemon-reload
+    info "Removed ${SERVICE_FILE} (COMFYUI_SUPERVISOR=llama-swap)"
+  fi
+
+  LS_CHANGED=0
+  if [[ -f "$FRAGMENT" ]] && cmp -s "$rendered_fragment" "$FRAGMENT"; then
+    success "${FRAGMENT} up to date"
   else
-    success "Running, nothing changed"
+    sudo install -m 644 -o root -g root "$rendered_fragment" "$FRAGMENT"
+    LS_CHANGED=1
+    success "Wrote ${FRAGMENT}"
   fi
-elif is_true "$COMFYUI_AUTOSTART"; then
-  sudo systemctl start "$SERVICE_NAME"
-  info "Started"
-else
-  info "Not started (COMFYUI_AUTOSTART=false) — start with: sudo systemctl start ${SERVICE_NAME}"
-fi
+  rm -f "$rendered_fragment"
 
-if systemctl is-active --quiet "$SERVICE_NAME"; then
-  info "Waiting up to ${COMFYUI_WAIT_TIMEOUT}s for ${HEALTH_URL}"
-  elapsed=0
-  until curl -fs -o /dev/null --max-time 5 "$HEALTH_URL"; do
-    if systemctl is-failed --quiet "$SERVICE_NAME" || (( elapsed >= COMFYUI_WAIT_TIMEOUT )); then
-      error "ComfyUI did not come up — see: journalctl -u ${SERVICE_NAME} -n 50"
+  # Compared by hand rather than via render_install: --force must not restart
+  # llama-swap (and unload every model) when the limits did not change.
+  if [[ -f "$LLAMA_SWAP_DROPIN" ]] && cmp -s "${TEMPLATE_DIR}/llama-swap-dropin.conf" "$LLAMA_SWAP_DROPIN"; then
+    success "${LLAMA_SWAP_DROPIN} up to date"
+  else
+    sudo install -d -m 755 "$(dirname "$LLAMA_SWAP_DROPIN")"
+    sudo install -m 644 -o root -g root "${TEMPLATE_DIR}/llama-swap-dropin.conf" "$LLAMA_SWAP_DROPIN"
+    sudo systemctl daemon-reload
+    LS_CHANGED=1
+    success "Wrote ${LLAMA_SWAP_DROPIN}"
+  fi
+
+  if (( LS_CHANGED )) || llama_swap_restart_pending; then
+    restart_llama_swap "ComfyUI fragment or unit limits changed"
+  else
+    # llama-swap keeps running; only a loaded ComfyUI can be out of date.
+    COMFYUI_PID="$(comfyui_pid)"
+    if [[ -n "$COMFYUI_PID" ]] && { (( RUNTIME_CHANGED )) || is_true "$FORCE" || comfyui_outdated "$COMFYUI_PID"; }; then
+      unload_comfyui
+    else
+      success "llama-swap unchanged${COMFYUI_PID:+, loaded ComfyUI is current}"
     fi
-    sleep 3
-    elapsed=$(( elapsed + 3 ))
-  done
-  success "ComfyUI answers on ${HEALTH_URL}"
+  fi
+else
+  if remove_llama_swap_integration; then
+    restart_llama_swap "ComfyUI moved back to its own service"
+  fi
+
+  step "systemd unit"
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  if render_install "${TEMPLATE_DIR}/comfyui.service" "$SERVICE_FILE" 644 root:root \
+       '${COMFYUI_USER} ${COMFYUI_GROUP} ${COMFYUI_DIR} ${COMFYUI_APP_DIR}'; then
+    RUNTIME_CHANGED=1
+    sudo systemctl daemon-reload
+    success "Wrote ${SERVICE_FILE}"
+  else
+    success "${SERVICE_FILE} up to date"
+  fi
+
+  step "Service state"
+
+  if is_true "$COMFYUI_AUTOSTART"; then
+    if ! systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+      sudo systemctl enable --quiet "$SERVICE_NAME"
+      success "Enabled at boot"
+    fi
+  elif systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+    sudo systemctl disable --quiet "$SERVICE_NAME"
+    info "Disabled at boot (COMFYUI_AUTOSTART=false)"
+  fi
+
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    if (( RUNTIME_CHANGED )) || is_true "$FORCE" || restart_pending; then
+      if is_true "$INTERACTIVE" && ! confirm "ComfyUI is running; restart it now (kills any running job)?"; then
+        warn "Not restarted — changes apply at the next start: sudo systemctl restart ${SERVICE_NAME}"
+      else
+        sudo systemctl restart "$SERVICE_NAME"
+        info "Restarted to apply changes"
+      fi
+    else
+      success "Running, nothing changed"
+    fi
+  elif is_true "$COMFYUI_AUTOSTART"; then
+    sudo systemctl start "$SERVICE_NAME"
+    info "Started"
+  else
+    info "Not started (COMFYUI_AUTOSTART=false) — start with: sudo systemctl start ${SERVICE_NAME}"
+  fi
+
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    info "Waiting up to ${COMFYUI_WAIT_TIMEOUT}s for ${HEALTH_URL}"
+    elapsed=0
+    until curl -fs -o /dev/null --max-time 5 "$HEALTH_URL"; do
+      if systemctl is-failed --quiet "$SERVICE_NAME" || (( elapsed >= COMFYUI_WAIT_TIMEOUT )); then
+        error "ComfyUI did not come up — see: journalctl -u ${SERVICE_NAME} -n 50"
+      fi
+      sleep 3
+      elapsed=$(( elapsed + 3 ))
+    done
+    success "ComfyUI answers on ${HEALTH_URL}"
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -924,16 +1290,28 @@ echo -e "${BOLD}═════════════════════�
 echo -e "${GREEN}${BOLD}  ComfyUI setup complete${RESET}"
 echo -e "${BOLD}═══════════════════════════════════════════════════${RESET}"
 echo ""
-echo -e "  ${BOLD}URL${RESET}          http://${PROBE_HOST}:${COMFYUI_PORT}"
+if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
+  echo -e "  ${BOLD}URL${RESET}          ${LS_URL}/comfyui/  (llama-swap; opening it starts ComfyUI)"
+else
+  echo -e "  ${BOLD}URL${RESET}          http://${PROBE_HOST}:${COMFYUI_PORT}"
+fi
 echo -e "  ${BOLD}Version${RESET}      ComfyUI ${COMFYUI_REF}, torch $(manifest_get torch) (${PLATFORM} path)"
 echo -e "  ${BOLD}Directory${RESET}    ${COMFYUI_DIR}"
 echo -e "  ${BOLD}Models${RESET}       ${COMFYUI_MODELS_DIR}"
-echo -e "  ${BOLD}Service${RESET}      ${SERVICE_NAME} ($(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true), boot: $(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true))"
-echo ""
-echo -e "  Start / stop:  sudo systemctl start|stop ${SERVICE_NAME}"
-echo -e "  Logs:          journalctl -u ${SERVICE_NAME} -f"
+if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
+  echo -e "  ${BOLD}Supervisor${RESET}   llama-swap, model ${LLAMA_SWAP_MODEL_ID} ($([[ -n "$(comfyui_pid)" ]] && echo loaded || echo 'not loaded'))"
+  echo ""
+  echo -e "  Start:         open ${LS_URL}/comfyui/"
+  echo -e "  Stop:          request any other model, or unload ${LLAMA_SWAP_MODEL_ID} in ${LS_URL}/ui"
+  echo -e "  Logs:          journalctl -u ${LLAMA_SWAP_SERVICE} -f"
+else
+  echo -e "  ${BOLD}Service${RESET}      ${SERVICE_NAME} ($(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true), boot: $(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true))"
+  echo ""
+  echo -e "  Start / stop:  sudo systemctl start|stop ${SERVICE_NAME}"
+  echo -e "  Logs:          journalctl -u ${SERVICE_NAME} -f"
+fi
 echo -e "  Verify:        $0 --check"
-if [[ "$COMFYUI_LISTEN" != "127.0.0.1" && "$COMFYUI_LISTEN" != "localhost" ]]; then
+if [[ "$COMFYUI_SUPERVISOR" == "systemd" && "$COMFYUI_LISTEN" != "127.0.0.1" && "$COMFYUI_LISTEN" != "localhost" ]]; then
   echo ""
   warn "ComfyUI listens on ${COMFYUI_LISTEN} and has no authentication."
 fi

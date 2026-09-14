@@ -62,6 +62,8 @@ scripts:
     env:
       LLAMA_SWAP_PORT: '9292'
       LLAMA_SWAP_DIR: /srv/llama-swap
+      # Extra config files merged into config.yaml (setup-comfyui drops here)
+      # LLAMA_SWAP_FRAGMENT_DIR: /srv/llama-swap/conf.d
     args: []
       # - --force
   setup-vllm:
@@ -124,8 +126,11 @@ scripts:
     args: []
   setup-comfyui:
     enabled: false
-    description: Install ComfyUI as a systemd service (DGX Spark / GB10)
+    description: Install ComfyUI (own service or behind llama-swap; DGX Spark)
     env:
+      # systemd: own comfyui.service | llama-swap: model comfyui_auto,
+      # started via http://<host>:9292/comfyui/ (run setup-llama-swap first)
+      COMFYUI_SUPERVISOR: systemd
       COMFYUI_REF: v0.35.0
       COMFYUI_PORT: '8188'
       # ComfyUI has no authentication — keep it on loopback

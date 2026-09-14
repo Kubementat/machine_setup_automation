@@ -1,0 +1,19 @@
+# Managed by tasks/setup-comfyui.sh — re-run the task instead of editing this.
+#
+# ComfyUI as the reserved llama-swap model comfyui_auto (COMFYUI_SUPERVISOR=
+# llama-swap). Opening /comfyui/ starts it; requesting any other model stops it.
+#
+# No ttl on purpose: comfyui_auto inherits globalTTL (0 = never by default).
+# Websocket traffic does not reset llama-swap's TTL clock, so a finite ttl
+# would kill a job whose browser tab was closed.
+#
+# ${PORT} is a llama-swap macro; everything else was filled in at render time.
+---
+models:
+  comfyui_auto:
+    name: ComfyUI
+    cmd: |
+      ${COMFYUI_CMD_PREFIX}${COMFYUI_DIR}/bin/comfyui-launch
+      --listen 127.0.0.1 --port ${PORT}
+    proxy: "http://127.0.0.1:${PORT}"
+    checkEndpoint: /system_stats

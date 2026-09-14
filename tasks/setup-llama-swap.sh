@@ -13,7 +13,8 @@
 #   2. Keeps an existing installation unless `--force`; prompts only with `--interactive`
 #   3. Downloads the latest llama-swap binary from GitHub releases
 #   4. Generates config.yaml from template (comprehensive example with all options)
-#   5. Generates and installs llama-swap.service from template
+#   5. Generates and installs llama-swap.service from template, including
+#      --config-dir for config fragments other tasks drop in (e.g. ComfyUI)
 #   6. Reloads systemd, starts and enables the service
 #   7. Waits for the /health endpoint to respond
 #   8. Displays access information and management commands
@@ -29,6 +30,8 @@
 #   LLAMA_SWAP_USER       - Service runtime user (default: root)
 #   LLAMA_SWAP_BIN_PATH   - Binary install path (default: /usr/local/bin/llama-swap)
 #   LLAMA_SWAP_VERSION    - Release version to install (default: latest)
+#   LLAMA_SWAP_FRAGMENT_DIR - Extra config files merged into config.yaml
+#                           (default: ${LLAMA_SWAP_DIR}/conf.d)
 #
 # DEPENDENCIES:
 #   - curl: Used for health check polling and binary download
@@ -38,6 +41,7 @@
 #
 # OUTPUTS:
 #   - ${LLAMA_SWAP_DIR}/config/config.yaml - llama-swap configuration
+#   - ${LLAMA_SWAP_FRAGMENT_DIR}/          - config fragments (--config-dir)
 #   - /etc/systemd/system/llama-swap.service - systemd unit file
 #   - ${LLAMA_SWAP_BIN_PATH} - installed binary
 #
@@ -48,7 +52,8 @@
 #   ./setup-llama-swap.sh --interactive            # prompt before replacing an existing install
 #   ./setup-llama-swap.sh --help                   # show help and exit
 #
-#   An existing installation is kept by default (exit 0, nothing changed).
+#   An existing installation is kept by default: binary and config.yaml stay
+#   untouched, only the unit and the fragment directory are converged.
 #   --force takes precedence over --interactive (no prompt, re-install).
 #
 # REFERENCE:
@@ -119,6 +124,7 @@ LLAMA_SWAP_LISTEN_ADDR="${LLAMA_SWAP_LISTEN_ADDR:-0.0.0.0:9292}"  # Bind address
 LLAMA_SWAP_USER="${LLAMA_SWAP_USER:-root}"               # Service user
 LLAMA_SWAP_BIN_PATH="${LLAMA_SWAP_BIN_PATH:-/usr/local/bin/llama-swap}"  # Binary path
 LLAMA_SWAP_VERSION="${LLAMA_SWAP_VERSION:-latest}"       # Release version
+LLAMA_SWAP_FRAGMENT_DIR="${LLAMA_SWAP_FRAGMENT_DIR:-${LLAMA_SWAP_DIR}/conf.d}"  # --config-dir
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPUTED VALUES
@@ -149,7 +155,8 @@ ${BOLD}Options:${RESET}
   --interactive  Prompt before replacing an existing install (default: keep it, exit 0)
   -h, --help     Show this help and exit
 
-  An existing installation is kept by default (exit 0, nothing changed).
+  An existing installation is kept by default: binary and config.yaml stay
+  untouched, only the unit and the fragment directory are converged.
   --force wins: no prompt, re-installs and updates the binary.
 
 ${BOLD}Environment variables${RESET} (all optional):
@@ -163,6 +170,9 @@ ${BOLD}Environment variables${RESET} (all optional):
   LLAMA_SWAP_USER          Service runtime user (default: root)
   LLAMA_SWAP_BIN_PATH      Binary install path (default: /usr/local/bin/llama-swap)
   LLAMA_SWAP_VERSION       Release version to install (default: latest)
+  LLAMA_SWAP_FRAGMENT_DIR  Directory of extra *.yaml config files merged into
+                           config.yaml via --config-dir (default: \${LLAMA_SWAP_DIR}/conf.d)
+                           Other tasks drop their models here (e.g. setup-comfyui.sh).
 EOF
 }
 
@@ -204,6 +214,11 @@ if ! command -v jq &>/dev/null; then
   error "jq is not installed. Required for GitHub release detection. Install with: sudo apt-get install jq"
 fi
 
+# llama-swap refuses a --config-dir that also contains the --config file.
+if [[ "$(realpath -m "$LLAMA_SWAP_FRAGMENT_DIR")" == "$(realpath -m "$CONFIG_DIR")" ]]; then
+  error "LLAMA_SWAP_FRAGMENT_DIR must not be ${CONFIG_DIR} — that directory holds config.yaml"
+fi
+
 # Warn if not running as root (will use sudo for privileged commands)
 if [[ $EUID -ne 0 ]]; then
   warn "Not running as root. Commands requiring root privileges will use sudo."
@@ -213,6 +228,49 @@ fi
 # shellcheck disable=SC2119
 LLAMA_SWAP_ARCH="$(detect_arch)"
 info "Detected architecture: ${LLAMA_SWAP_ARCH}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UNIT RENDERING
+# ─────────────────────────────────────────────────────────────────────────────
+
+render_unit() {
+  export LLAMA_SWAP_USER LLAMA_SWAP_DIR LLAMA_SWAP_BIN_PATH CONFIG_FILE LLAMA_SWAP_LISTEN_ADDR LLAMA_SWAP_FRAGMENT_DIR
+  envsubst '${LLAMA_SWAP_USER} ${LLAMA_SWAP_DIR} ${LLAMA_SWAP_BIN_PATH} ${CONFIG_FILE} ${LLAMA_SWAP_LISTEN_ADDR} ${LLAMA_SWAP_FRAGMENT_DIR}' \
+    < "${TEMPLATE_DIR}/llama-swap.service"
+}
+
+# Converges the unit of an installation that is otherwise kept as it is, so a
+# template change (e.g. --config-dir) reaches it without replacing the binary.
+converge_existing_unit() {
+  local rendered
+  # The directory must exist before the unit references it: llama-swap does
+  # not start with a missing --config-dir.
+  sudo install -d -m 755 "$LLAMA_SWAP_FRAGMENT_DIR"
+  rendered="$(mktempfile llama-swap.service)"
+  render_unit > "$rendered"
+  if cmp -s "$rendered" "$SERVICE_FILE"; then
+    rm -f "$rendered"
+    success "Service file up to date (${SERVICE_FILE})"
+  else
+    sudo install -m 644 "$rendered" "$SERVICE_FILE"
+    rm -f "$rendered"
+    sudo systemctl daemon-reload
+    success "Service file updated (${SERVICE_FILE})"
+  fi
+  # Restart whenever the running process predates the unit file — this also
+  # applies an update from an earlier run that did not restart.
+  if sudo systemctl is-active --quiet llama-swap && unit_newer_than_service; then
+    warn "Restarting llama-swap to apply the unit change — loaded models are unloaded"
+    sudo systemctl restart llama-swap
+  fi
+}
+
+# True when the unit file changed after the running llama-swap was started.
+unit_newer_than_service() {
+  local started
+  started="$(sudo systemctl show -p ActiveEnterTimestamp --value llama-swap)"
+  [[ -n "$started" ]] && (( $(stat -c %Y "$SERVICE_FILE") > $(date -d "$started" +%s) ))
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CHECK FOR EXISTING INSTALLATION
@@ -233,6 +291,11 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
       success "Config file found at ${CONFIG_FILE}"
     else
       warn "Config file not found at ${CONFIG_FILE}"
+    fi
+    if grep -q -- '--config-dir' "$SERVICE_FILE"; then
+      success "Config fragments loaded from ${LLAMA_SWAP_FRAGMENT_DIR}"
+    else
+      warn "Service file has no --config-dir — re-run this script to add ${LLAMA_SWAP_FRAGMENT_DIR}"
     fi
     if [[ -x "$LLAMA_SWAP_BIN_PATH" ]]; then
       success "Binary found at ${LLAMA_SWAP_BIN_PATH} ($(llama-swap -version 2>/dev/null || echo 'unknown version'))"
@@ -258,12 +321,14 @@ if [[ -f "$SERVICE_FILE" ]]; then
   elif [[ "$INTERACTIVE" == "true" ]]; then
     read -rp "    Re-install and update binary? [y/N] " answer
     if [[ "${answer,,}" != "y" ]]; then
-      info "Keeping existing setup. Exiting."
+      info "Keeping existing binary and config.yaml; converging the unit."
+      converge_existing_unit
       exit 0
     fi
   else
-    info "Non-interactive: keeping existing setup (${SERVICE_FILE} untouched)."
+    info "Non-interactive: keeping existing binary and config.yaml; converging the unit."
     info "Re-run with --interactive to be asked, or --force to re-install and update the binary."
+    converge_existing_unit
     exit 0
   fi
   # Stop and disable existing service before re-install
@@ -289,6 +354,8 @@ fi
 step "Creating directories at ${LLAMA_SWAP_DIR}"
 
 sudo mkdir -p "$CONFIG_DIR"
+# Must exist before the unit references it (llama-swap fails on a missing --config-dir).
+sudo install -d -m 755 "$LLAMA_SWAP_FRAGMENT_DIR"
 success "Directories ready."
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -404,11 +471,7 @@ fi
 
 step "Generating systemd service file"
 
-export LLAMA_SWAP_USER LLAMA_SWAP_DIR LLAMA_SWAP_BIN_PATH CONFIG_FILE LLAMA_SWAP_LISTEN_ADDR
-
-envsubst '${LLAMA_SWAP_USER} ${LLAMA_SWAP_DIR} ${LLAMA_SWAP_BIN_PATH} ${CONFIG_FILE} ${LLAMA_SWAP_LISTEN_ADDR}' \
-  < "${TEMPLATE_DIR}/llama-swap.service" \
-  | sudo tee "$SERVICE_FILE" > /dev/null
+render_unit | sudo tee "$SERVICE_FILE" > /dev/null
 
 sudo chmod 644 "$SERVICE_FILE"
 success "Service file installed at ${SERVICE_FILE}"
@@ -487,6 +550,7 @@ echo -e "  ${BOLD}OpenAI API${RESET}        http://localhost:${LLAMA_SWAP_PORT}/
 echo -e "  ${BOLD}Health check${RESET}      http://localhost:${LLAMA_SWAP_PORT}/health"
 echo -e "  ${BOLD}Running models${RESET}    http://localhost:${LLAMA_SWAP_PORT}/running"
 echo -e "  ${BOLD}Config file${RESET}       ${CONFIG_FILE}"
+echo -e "  ${BOLD}Config fragments${RESET}  ${LLAMA_SWAP_FRAGMENT_DIR}"
 echo -e "  ${BOLD}Service file${RESET}      ${SERVICE_FILE}"
 echo -e "  ${BOLD}Binary${RESET}            ${LLAMA_SWAP_BIN_PATH} (${INSTALLED_VERSION})"
 echo -e "  ${BOLD}Listen address${RESET}    ${LLAMA_SWAP_LISTEN_ADDR}"
