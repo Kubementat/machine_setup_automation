@@ -122,6 +122,19 @@ scripts:
       VLLM_OMNI_PORT: '8091'
       # VLLM_OMNI_MODEL: Tongyi-MAI/Z-Image-Turbo
     args: []
+  setup-comfyui:
+    enabled: false
+    description: Install ComfyUI as a systemd service (DGX Spark / GB10)
+    env:
+      COMFYUI_REF: v0.35.0
+      COMFYUI_PORT: '8188'
+      # ComfyUI has no authentication — keep it on loopback
+      COMFYUI_LISTEN: 127.0.0.1
+      # Off by default: ComfyUI next to a loaded LLM can exhaust unified memory
+      COMFYUI_AUTOSTART: 'false'
+      # COMFYUI_SAGE_BUILD: 'false'
+      # COMFYUI_EXTRA_ARGS: --bf16-unet --bf16-vae --bf16-text-enc
+    args: []
   setup-lm-studio:
     enabled: false
     description: Install LM Studio server

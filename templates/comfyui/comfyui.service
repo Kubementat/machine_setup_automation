@@ -1,0 +1,31 @@
+[Unit]
+Description=ComfyUI: node-based diffusion workflow server
+Documentation=https://github.com/Comfy-Org/ComfyUI
+After=network.target
+
+[Service]
+Type=simple
+User=${COMFYUI_USER}
+Group=${COMFYUI_GROUP}
+WorkingDirectory=${COMFYUI_APP_DIR}
+ExecStart=${COMFYUI_DIR}/bin/comfyui-launch
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=comfyui
+TimeoutStopSec=30
+# PyTorch's recommended container limits: unlimited locked memory (pinned host
+# buffers) and a 64 MiB stack. Taken from the community DGX Spark profile; the
+# effect on GB10 is unmeasured.
+LimitMEMLOCK=infinity
+LimitSTACK=67108864
+# Security hardening. /srv stays writable under ProtectSystem=full; the
+# launcher moves all caches there because $HOME is read-only.
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

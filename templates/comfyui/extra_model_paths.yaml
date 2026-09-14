@@ -1,0 +1,17 @@
+# Managed by tasks/setup-comfyui.sh — re-run the task instead of editing this.
+#
+# Rendered only when COMFYUI_MODELS_DIR points outside the ComfyUI checkout.
+# is_default makes this the location ComfyUI writes new downloads to.
+---
+comfyui_models:
+  base_path: ${COMFYUI_MODELS_DIR}
+  is_default: true
+  checkpoints: checkpoints/
+  clip_vision: clip_vision/
+  controlnet: controlnet/
+  diffusion_models: diffusion_models/
+  embeddings: embeddings/
+  loras: loras/
+  text_encoders: text_encoders/
+  upscale_models: upscale_models/
+  vae: vae/

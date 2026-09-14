@@ -110,6 +110,27 @@ Deploys **vLLM-Omni** — the official vLLM sub-project for omni-modality servin
 - Optional Traefik reverse-proxy integration
 - Idempotent; supports `--force` and `--check`
 
+#### `setup-comfyui.sh`
+Installs **ComfyUI** (node-based diffusion workflows for images and video) from a pinned release tag into a uv venv under `/srv/comfyui` and runs it as the `comfyui` systemd service. Tuned for NVIDIA DGX Spark (GB10, sm_121, aarch64); other NVIDIA GPUs take a generic path, machines without one get CPU wheels and `--cpu`.
+
+**Features:**
+- Guards against the documented install hazard: torch/torchvision/torchaudio come from the PyTorch cu130 index and are frozen into a constraints file, so ComfyUI's unpinned `requirements.txt` cannot replace them; a re-run repairs a replaced torch build
+- Verifies the result: `torch.version.cuda`, compute capability, a real CUDA matmul, torchaudio, comfy-aimdo, onnxruntime `CUDAExecutionProvider`; records the resolved versions in `state/install-manifest` and prints upgrades as a diff
+- `onnxruntime-gpu` from PyPI (native sm_121 kernels) for pose/ControlNet preprocessor nodes
+- Removes conflicting OpenCV variants left behind by custom nodes
+- Optional SageAttention source build for GB10 (`COMFYUI_SAGE_BUILD=true`), rebuilt when torch changes
+- Loopback bind and no autostart by default (ComfyUI has no authentication; next to a loaded LLM it can exhaust unified memory)
+- Idempotent; supports `--check`, `--force` and `--interactive`
+
+**Environment variables (all optional):** `COMFYUI_DIR`, `COMFYUI_REF` (default `v0.35.0`), `COMFYUI_USER`, `COMFYUI_LISTEN` (default `127.0.0.1`), `COMFYUI_PORT` (default `8188`), `COMFYUI_MODELS_DIR`, `COMFYUI_AUTOSTART` (default `false`), `COMFYUI_TORCH_INDEX_URL`, `COMFYUI_RESERVE_VRAM` (default `8`), `COMFYUI_DISABLE_PINNED_MEMORY`, `COMFYUI_EXTRA_ARGS`, `COMFYUI_SAGE_BUILD`, `COMFYUI_SAGE_REF` — see `--help` for all of them.
+
+```bash
+./tasks/setup-comfyui.sh                          # install / converge
+./tasks/setup-comfyui.sh --check                  # verify, change nothing
+COMFYUI_AUTOSTART=true ./tasks/setup-comfyui.sh   # also start at boot
+COMFYUI_REF=v0.36.0 ./tasks/setup-comfyui.sh      # upgrade ComfyUI
+```
+
 #### `setup-omnigent.sh`
 Deploys Omnigent — an open-source meta-harness providing a common orchestration layer over multiple AI coding agents (Claude Code, Codex, Cursor, Pi, etc.) — via Docker Compose with Postgres + FastAPI. Also installs the runner CLI (`omnigent`) on the host for local agent execution.
 

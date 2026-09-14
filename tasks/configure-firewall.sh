@@ -27,7 +27,7 @@
 #                           a first enable over SSH (set 'false' for headless CI)
 #   FIREWALL_ROLLBACK_MINUTES  Self-rollback delay in minutes (default: 10)
 #   LM_STUDIO_PORT, OPENCODE_PORT, OPENWEBUI_PORT, KUBERNETES_API_PORT,
-#   GNOME_REMOTE_PORT — displayed only; no rule is added for them here
+#   GNOME_REMOTE_PORT, COMFYUI_PORT — displayed only; no rule is added for them here
 #   (each service's own setup script opens its port)
 #
 # Usage:
@@ -81,6 +81,7 @@ ${BOLD}Environment variables${RESET} (all optional):
   OPENWEBUI_PORT            (displayed only; rule not added by default) (default: 3333)
   KUBERNETES_API_PORT       (displayed only; rule not added by default) (default: 6443)
   GNOME_REMOTE_PORT         (displayed only; rule not added by default) (default: 3389)
+  COMFYUI_PORT              (displayed only; rule not added by default) (default: 8188)
 
 ${BOLD}WARNING:${RESET} When running over SSH, ensure SSHD_PORT is correct before
 enabling the firewall to avoid remote lockout. The lock-out pre-flight
@@ -115,6 +116,7 @@ done
 : "${OPENWEBUI_PORT:=3333}"
 : "${KUBERNETES_API_PORT:=6443}"
 : "${GNOME_REMOTE_PORT:=3389}"
+: "${COMFYUI_PORT:=8188}"
 
 # =============================================================================
 # Helper functions
@@ -150,6 +152,7 @@ echo "  OPENCODE_PORT=${OPENCODE_PORT} (displayed only)"
 echo "  OPENWEBUI_PORT=${OPENWEBUI_PORT} (displayed only)"
 echo "  KUBERNETES_API_PORT=${KUBERNETES_API_PORT} (displayed only)"
 echo "  GNOME_REMOTE_PORT=${GNOME_REMOTE_PORT} (displayed only)"
+echo "  COMFYUI_PORT=${COMFYUI_PORT} (displayed only)"
 
 # Validate the SSH port and the explicitly requested extra ports (before any
 # state is changed).
