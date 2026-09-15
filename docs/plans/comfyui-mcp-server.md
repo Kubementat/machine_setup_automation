@@ -129,14 +129,30 @@ matrix (operator):  comfy: "c & m"   llms: "(<every LLM>) & m"   m = comfyui-mcp
 - Long operations return a job id immediately (Cloudflare 100 s limit); one
   in-process job table, lost on restart (the tools say so).
 
+Implemented in step 2a (`comfyui_mcp/`, mcp 2.2.0 `MCPServer`, stateless + JSON
+responses, DNS-rebinding protection off because llama-swap forwards the client's
+Host header; tested against fake llama-swap/ComfyUI/comfy-cli with protocol
+revisions 2025-11-25 and 2026-07-28):
+
 | Tool | Does | Changes state |
 |---|---|---|
-| `nodes`, `discover` | wrap `comfy --json nodes …` / object_info | no |
-| `list_models(category?)` | files per category in the model directory | no |
-| `run_workflow` → job id, `job_status`, `fetch_outputs` | wrap `comfy --json run …` / `jobs …`; report a lost job when ComfyUI was evicted | ComfyUI queue |
+| `search_nodes(query)`, `show_node(name)` | `comfy nodes search -- <query>` / `comfy nodes show -- <name>` | no |
+| `list_model_folders()`, `list_models(folder)` | `comfy models list-folders` / `list-folder -- <folder>` (`comfy model list` has no JSON output) | no |
+| `run_workflow(workflow)` → `prompt_id` | writes the API-format JSON to `work/`, `comfy run --workflow <file>` (non-blocking; paid partner nodes are refused because `--allow-spend` is never passed) | ComfyUI queue |
+| `job_status(prompt_id)` | `comfy jobs status <id>` — works without loading ComfyUI | no |
+| `comfyui_status()` | manifest, release tags (`git ls-remote --tags --refs`), whether ComfyUI answers on its port — does not load it. `setup-comfyui.sh --check` is not run: it needs sudo | no |
+| `fetch_outputs` | **deferred** until the `jobs status` output format is checked on the target | — |
+
+Every comfy call: `comfy --json --skip-prompt --where local --workspace=<checkout> …`
+with `COMFY_NO_WATCH=1`, `DO_NOT_TRACK=1`, stdin closed. comfy-cli ignores
+`XDG_CONFIG_HOME`; its config follows `HOME`, so the fragment must set `HOME`.
+
+Planned for later steps:
+
+| Tool | Does | Changes state |
+|---|---|---|
 | `download_model(url, category, filename?, confirm)` → job id | see "Download limits" | model directory |
 | `download_status(job)` | progress / result | no |
-| `comfyui_status` | manifest, release tags (`git ls-remote --tags`), `setup-comfyui.sh --check` | no |
 | `comfyui_update(ref, confirm)` → returns immediately | validates, starts `comfyui-update@<ref>` (C5) | yes |
 | `comfyui_update_log(ref)` | journal of the update unit + post-update `--check` | no |
 | `comfyui_rollback(confirm)` | update to the previous ref from `state/update-history` | yes |
