@@ -138,6 +138,11 @@ scripts:
       # Off by default: ComfyUI next to a loaded LLM can exhaust unified memory
       COMFYUI_AUTOSTART: 'false'
       # COMFYUI_SAGE_BUILD: 'false'
+      # Custom node that finds/downloads a workflow's missing models ('false'
+      # disables it, settings kept). Its API returns stored HF/CivitAI keys
+      # to anyone who can reach ComfyUI.
+      COMFYUI_MODEL_RESOLVER: 'true'
+      # COMFYUI_MODEL_RESOLVER_REF: v1.2.1
       # COMFYUI_EXTRA_ARGS: --bf16-unet --bf16-vae --bf16-text-enc
     args: []
   setup-lm-studio:

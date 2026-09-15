@@ -35,8 +35,9 @@
 #      platforms, onnxruntime-gpu — all under the constraints
 #   5. Cleans up conflicting OpenCV variants left behind by custom nodes
 #   6. Optionally builds SageAttention from source (GB10 only, opt-in)
-#   7. Verifies the install and records the resolved versions
-#   8. Renders the launcher, then per supervisor:
+#   7. Installs the Model Resolver custom node at a pinned tag (default on)
+#   8. Verifies the install and records the resolved versions
+#   9. Renders the launcher, then per supervisor:
 #      systemd    — renders comfyui.service and converges its state
 #      llama-swap — writes a validated config fragment and unit limits for
 #                   llama-swap, restarts it only when those change, and unloads
@@ -51,6 +52,7 @@
 #   COMFYUI_PORT                  - Listen port (default: 8188)
 #   COMFYUI_AUTOSTART             - Enable the service at boot (default: false)
 #   COMFYUI_SAGE_BUILD            - Build SageAttention from source (default: false)
+#   COMFYUI_MODEL_RESOLVER        - Install the Model Resolver custom node (default: true)
 #   (see --help for the complete list)
 #
 # DEPENDENCIES:
@@ -66,6 +68,7 @@
 #   - ${COMFYUI_DIR}/.venv/              - Python environment
 #   - ${COMFYUI_DIR}/bin/comfyui-launch  - Launcher with the configured flags
 #   - ${COMFYUI_DIR}/state/              - constraints.txt, install-manifest
+#   - ${COMFYUI_DIR}/ComfyUI/custom_nodes/Comfyui-Model-Resolver/ (.disabled when off)
 #   - /etc/systemd/system/comfyui.service             (systemd mode)
 #   - <llama-swap --config-dir>/50-comfyui.yaml         (llama-swap mode)
 #   - /etc/systemd/system/llama-swap.service.d/50-comfyui.conf (llama-swap mode)
@@ -81,6 +84,7 @@
 # REFERENCE:
 #   https://github.com/Comfy-Org/ComfyUI
 #   https://build.nvidia.com/spark/comfyui
+#   https://github.com/Azornes/Comfyui-Model-Resolver
 #
 # =============================================================================
 
@@ -124,11 +128,14 @@ COMFYUI_SAGE_BUILD="${COMFYUI_SAGE_BUILD:-false}"
 # SageAttention main at a commit that contains c03f15fb (sm_121 support restored).
 COMFYUI_SAGE_REF="${COMFYUI_SAGE_REF:-d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5}"
 COMFYUI_SAGE_BUILD_JOBS="${COMFYUI_SAGE_BUILD_JOBS:-4}"
+COMFYUI_MODEL_RESOLVER="${COMFYUI_MODEL_RESOLVER:-true}"
+COMFYUI_MODEL_RESOLVER_REF="${COMFYUI_MODEL_RESOLVER_REF:-v1.2.1}"
 COMFYUI_WAIT_TIMEOUT="${COMFYUI_WAIT_TIMEOUT:-180}"
 FORCE="${FORCE:-0}"
 INTERACTIVE="${INTERACTIVE:-false}"
 
 SAGE_REPO_URL="https://github.com/thu-ml/SageAttention.git"
+RESOLVER_REPO_URL="https://github.com/Azornes/Comfyui-Model-Resolver.git"
 TORCH_INDEX_CUDA="https://download.pytorch.org/whl/cu130"
 TORCH_INDEX_CPU="https://download.pytorch.org/whl/cpu"
 SERVICE_NAME="comfyui"
@@ -201,6 +208,13 @@ ${BOLD}Environment variables${RESET} (all optional):
                                  Rebuilt automatically when torch changes.
   COMFYUI_SAGE_REF               SageAttention commit SHA (default: ${COMFYUI_SAGE_REF:0:12})
   COMFYUI_SAGE_BUILD_JOBS        Parallel compile jobs for SageAttention (default: 4)
+  COMFYUI_MODEL_RESOLVER         Install the Model Resolver custom node (default: true)
+                                 Finds and downloads the models a loaded workflow is
+                                 missing (Hugging Face, CivitAI). false renames it to
+                                 *.disabled, keeping its settings. API keys entered in
+                                 its settings are returned by its API to anyone who
+                                 can reach ComfyUI.
+  COMFYUI_MODEL_RESOLVER_REF     Model Resolver release tag (default: v1.2.1)
   COMFYUI_WAIT_TIMEOUT           Seconds to wait for ComfyUI / llama-swap to answer (default: 180)
   FORCE                          Same as --force (default: 0)
   INTERACTIVE                    Same as --interactive (default: false)
@@ -646,6 +660,9 @@ MANIFEST="${STATE_DIR}/install-manifest"
 LAUNCHER="${COMFYUI_DIR}/bin/comfyui-launch"
 EXTRA_PATHS="${APP_DIR}/extra_model_paths.yaml"
 SAGE_SRC="${COMFYUI_DIR}/src/SageAttention"
+RESOLVER_DIR="${APP_DIR}/custom_nodes/Comfyui-Model-Resolver"
+# ComfyUI skips custom_nodes/*.disabled.
+RESOLVER_OFF="${RESOLVER_DIR}.disabled"
 
 detect_platform
 if [[ -z "$COMFYUI_TORCH_INDEX_URL" ]]; then
@@ -678,6 +695,9 @@ COMFYUI_LAUNCH_ARGS="${LAUNCH_ARGS[*]}${COMFYUI_EXTRA_ARGS:+ ${COMFYUI_EXTRA_ARG
 PROBE_HOST="$COMFYUI_LISTEN"
 if [[ "$PROBE_HOST" == "0.0.0.0" || "$PROBE_HOST" == "::" ]]; then PROBE_HOST="127.0.0.1"; fi
 HEALTH_URL="http://${PROBE_HOST}:${COMFYUI_PORT}/system_stats"
+# Answers only when the node imported; ComfyUI starts even when one fails to.
+# Not /model_resolver/version: that one fetches the latest version from GitHub.
+RESOLVER_URL="http://${PROBE_HOST}:${COMFYUI_PORT}/model_resolver/capabilities"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRE-FLIGHT CHECKS
@@ -769,6 +789,21 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
     check_fail "No venv at ${VENV_DIR}"
   fi
 
+  if is_true "$COMFYUI_MODEL_RESOLVER"; then
+    if [[ -d "${RESOLVER_DIR}/.git" ]]; then
+      resolver_ref="$(git -c safe.directory="$RESOLVER_DIR" -C "$RESOLVER_DIR" describe --tags --exact-match 2>/dev/null || echo 'untagged')"
+      if [[ "$resolver_ref" == "$COMFYUI_MODEL_RESOLVER_REF" ]]; then
+        success "Model Resolver checkout at ${resolver_ref}"
+      else
+        check_fail "Model Resolver checkout is at ${resolver_ref}, configured COMFYUI_MODEL_RESOLVER_REF is ${COMFYUI_MODEL_RESOLVER_REF}"
+      fi
+    else
+      check_fail "No Model Resolver checkout at ${RESOLVER_DIR}"
+    fi
+  elif [[ -d "$RESOLVER_DIR" ]]; then
+    check_fail "COMFYUI_MODEL_RESOLVER=false but ${RESOLVER_DIR} is still enabled"
+  fi
+
   if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
     step "llama-swap integration"
     if ! discover_llama_swap; then
@@ -852,6 +887,12 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
       fi
       if restart_pending; then
         check_fail "Service runs an older configuration — restart pending (sudo systemctl restart ${SERVICE_NAME})"
+      elif is_true "$COMFYUI_MODEL_RESOLVER"; then
+        if curl -fs -o /dev/null --max-time 5 "$RESOLVER_URL"; then
+          success "Model Resolver loaded (${RESOLVER_URL})"
+        else
+          check_fail "Model Resolver did not load — look for IMPORT FAILED in: journalctl -u ${SERVICE_NAME} -n 200"
+        fi
       fi
     else
       info "Service is not running (start: sudo systemctl start ${SERVICE_NAME})"
@@ -1091,6 +1132,49 @@ if [[ "$SAGE_ENABLED" == "true" ]]; then
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MODEL RESOLVER — custom node that resolves a workflow's missing models
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Switching it off is a rename, so model_resolver_settings.json (API keys) in
+# the checkout survives. A change reaches ComfyUI through the manifest below.
+if is_true "$COMFYUI_MODEL_RESOLVER"; then
+  step "Model Resolver (${COMFYUI_MODEL_RESOLVER_REF})"
+  if [[ ! -e "$RESOLVER_DIR" && -d "$RESOLVER_OFF" ]]; then
+    as_comfy mv "$RESOLVER_OFF" "$RESOLVER_DIR"
+    info "Re-enabled ${RESOLVER_DIR} (settings kept)"
+  fi
+  if [[ ! -e "$RESOLVER_DIR" ]]; then
+    as_comfy git -c advice.detachedHead=false clone --quiet --filter=blob:none \
+      --branch "$COMFYUI_MODEL_RESOLVER_REF" "$RESOLVER_REPO_URL" "$RESOLVER_DIR"
+    success "Cloned Model Resolver ${COMFYUI_MODEL_RESOLVER_REF}"
+  elif [[ ! -d "${RESOLVER_DIR}/.git" ]]; then
+    error "${RESOLVER_DIR} exists but is not a git checkout — move it away and re-run"
+  else
+    resolver_ref="$(as_comfy git -C "$RESOLVER_DIR" describe --tags --exact-match 2>/dev/null || echo 'untagged')"
+    if [[ "$resolver_ref" == "$COMFYUI_MODEL_RESOLVER_REF" ]]; then
+      success "Checkout already at ${COMFYUI_MODEL_RESOLVER_REF}"
+    else
+      if [[ -n "$(as_comfy git -C "$RESOLVER_DIR" status --porcelain --untracked-files=no)" ]] && ! is_true "$FORCE"; then
+        as_comfy git -C "$RESOLVER_DIR" status --short --untracked-files=no | sed 's/^/    /'
+        error "Tracked files in ${RESOLVER_DIR} were modified — commit/stash them or re-run with --force to discard"
+      fi
+      info "Switching ${resolver_ref} → ${COMFYUI_MODEL_RESOLVER_REF}"
+      as_comfy git -C "$RESOLVER_DIR" fetch --quiet --tags --force origin
+      as_comfy git -c advice.detachedHead=false -C "$RESOLVER_DIR" checkout --quiet --force "$COMFYUI_MODEL_RESOLVER_REF"
+      success "Checked out ${COMFYUI_MODEL_RESOLVER_REF}"
+    fi
+  fi
+  uv_pip install --quiet --requirement "${RESOLVER_DIR}/requirements.txt" --constraint "$CONSTRAINTS" \
+    || error "Installing the Model Resolver's requirements under ${CONSTRAINTS} failed (see uv's message above)"
+  success "Model Resolver requirements satisfied"
+elif [[ -d "$RESOLVER_DIR" ]]; then
+  step "Model Resolver"
+  [[ ! -e "$RESOLVER_OFF" ]] || error "Both ${RESOLVER_DIR} and ${RESOLVER_OFF} exist — remove one and re-run"
+  as_comfy mv "$RESOLVER_DIR" "$RESOLVER_OFF"
+  info "Disabled: moved to ${RESOLVER_OFF} (COMFYUI_MODEL_RESOLVER=false, settings kept)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # VERIFY AND RECORD
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1102,6 +1186,9 @@ success "Installation verified"
 new_manifest="comfyui_ref=${COMFYUI_REF}"$'\n'"torch_index=${COMFYUI_TORCH_INDEX_URL}"$'\n'"${VERIFY_VERSIONS}"
 if [[ "$SAGE_ENABLED" == "true" ]]; then
   new_manifest+="sage_ref=${COMFYUI_SAGE_REF}"$'\n'"sage_torch=$("$VENV_PY" -c 'import torch; print(torch.__version__)')"$'\n'
+fi
+if is_true "$COMFYUI_MODEL_RESOLVER"; then
+  new_manifest+="model_resolver_ref=${COMFYUI_MODEL_RESOLVER_REF}"$'\n'
 fi
 # Show upgrades as a diff against the previous run.
 if [[ -f "$MANIFEST" ]]; then
@@ -1278,6 +1365,12 @@ else
       elapsed=$(( elapsed + 3 ))
     done
     success "ComfyUI answers on ${HEALTH_URL}"
+    # A declined --interactive restart leaves the old state running.
+    if is_true "$COMFYUI_MODEL_RESOLVER" && ! restart_pending; then
+      curl -fs -o /dev/null --max-time 5 "$RESOLVER_URL" \
+        || error "ComfyUI is up, but the Model Resolver did not load — look for IMPORT FAILED in: journalctl -u ${SERVICE_NAME} -n 200"
+      success "Model Resolver loaded (${RESOLVER_URL})"
+    fi
   fi
 fi
 
@@ -1298,6 +1391,9 @@ fi
 echo -e "  ${BOLD}Version${RESET}      ComfyUI ${COMFYUI_REF}, torch $(manifest_get torch) (${PLATFORM} path)"
 echo -e "  ${BOLD}Directory${RESET}    ${COMFYUI_DIR}"
 echo -e "  ${BOLD}Models${RESET}       ${COMFYUI_MODELS_DIR}"
+if is_true "$COMFYUI_MODEL_RESOLVER"; then
+  echo -e "  ${BOLD}Custom node${RESET}  Model Resolver ${COMFYUI_MODEL_RESOLVER_REF} (settings: Model Resolver panel in the ComfyUI UI)"
+fi
 if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
   echo -e "  ${BOLD}Supervisor${RESET}   llama-swap, model ${LLAMA_SWAP_MODEL_ID} ($([[ -n "$(comfyui_pid)" ]] && echo loaded || echo 'not loaded'))"
   echo ""
