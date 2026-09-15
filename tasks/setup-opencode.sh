@@ -8,6 +8,8 @@
 #   Installs the Opencode CLI by default (npm). Optionally installs the
 #   "opencode" systemd service (OPENCODE_SERVICE=true) or deploys the
 #   Opencode server as a Docker Compose stack (USE_DOCKER=true).
+#   The CLI install initializes the user-level config file
+#   (~/.config/opencode/opencode.json) as {} when it does not exist yet.
 #
 # Environment Variables:
 #   OPENCODE_SERVICE         - Install the opencode systemd service (default: false)
@@ -269,6 +271,19 @@ install_opencode_cli() {
     fi
 
     success "Opencode CLI installed/updated successfully."
+
+    # Ensure the user-level config file (config + provider/model definitions)
+    # exists; initialize it as {} when missing. Tools that merge models into
+    # it (e.g. tasks/sync-models.py) require the file to exist.
+    step "Ensuring Opencode config file exists"
+    local opencode_config="${HOME}/.config/opencode/opencode.json"
+    if [[ ! -f "${opencode_config}" ]]; then
+        mkdir -p "$(dirname "${opencode_config}")"
+        echo '{}' > "${opencode_config}"
+        info "Initialized ${opencode_config}"
+    else
+        info "Already present: ${opencode_config}"
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -675,6 +690,11 @@ TRAEFIK OPTIONS                (only used when USE_DOCKER=true)
 PRIVILEGES
   Run as your normal user — the script escalates with sudo internally where
   needed (npm/apt installs, /srv/opencode, systemd, ufw, docker).
+
+NOTES
+  The CLI install ensures the user-level config file
+  (~/.config/opencode/opencode.json) exists, initializing it to {} when
+  missing, so model-sync tooling can merge into it.
 
 EXAMPLES
   # CLI only (default):

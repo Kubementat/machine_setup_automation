@@ -7,6 +7,8 @@
 # Description:
 #   Installs and configures the Pi coding agent environment.
 #   Ensures latest Node.js version is installed and then installs Pi globally.
+#   Initializes the Pi config and model files (~/.pi/agent/settings.json,
+#   ~/.pi/agent/models.json) as {} when they do not exist yet.
 #
 # Environment Variables (optional):
 #   NVM_DIR - NVM directory path (default: $HOME/.nvm)
@@ -38,7 +40,8 @@ ${BOLD}Usage:${RESET} $0 [OPTIONS]
 
 Installs and configures the Pi coding agent environment. Ensures the latest
 Node.js version is installed (via NVM) and then installs Pi globally,
-including a set of Pi extensions.
+including a set of Pi extensions. Initializes the Pi config and model files
+(~/.pi/agent/settings.json, ~/.pi/agent/models.json) as {} when missing.
 
 ${BOLD}Options:${RESET}
   -h, --help    Show this help and exit
@@ -133,6 +136,21 @@ step "Installing Playwright browsers and dependencies"
 npx playwright install-deps || true
 npx playwright install || true
 npx playwright install chrome || true
+
+# Ensure Pi's config and model files exist; initialize missing files as {}.
+# Tools that merge into these files (e.g. tasks/sync-models.py) require the
+# files to exist before their first run.
+step "Ensuring Pi config and model files exist"
+PI_AGENT_DIR="${HOME}/.pi/agent"
+mkdir -p "${PI_AGENT_DIR}"
+for pi_file in "${PI_AGENT_DIR}/settings.json" "${PI_AGENT_DIR}/models.json"; do
+  if [[ ! -f "${pi_file}" ]]; then
+    echo '{}' > "${pi_file}"
+    info "Initialized ${pi_file}"
+  else
+    info "Already present: ${pi_file}"
+  fi
+done
 
 success "Pi coding agent and extras installed successfully"
 info "Run 'pi --help' to see available commands"
