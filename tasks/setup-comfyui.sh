@@ -430,6 +430,57 @@ sage_has_sm121() {
   [[ $found -eq 1 ]]
 }
 
+# The Model Resolver's frontend imports ComfyUI's scripts/*.js with one "../"
+# too many. Browsers drop surplus "../" at the server root, so this only breaks
+# below a path prefix such as llama-swap's /comfyui/, where /scripts/api.js is
+# a 404. Sets each specifier to the depth its file needs — a no-op once
+# upstream is fixed. Files are handled as bytes, so line endings are kept.
+#   resolver_imports fix    rewrite in place; prints the number of imports changed
+#   resolver_imports check  prints the number of imports that still need it
+#   resolver_imports ours   prints tracked files whose only change is this rewrite
+resolver_imports() {
+  local -a runner=()
+  if [[ "$1" != "check" ]]; then runner=(as_comfy); fi
+  "${runner[@]}" "$VENV_PY" - "$1" "$RESOLVER_DIR" <<'PY'
+import pathlib
+import re
+import subprocess
+import sys
+
+mode, node = sys.argv[1], pathlib.Path(sys.argv[2])
+web = node / "web"
+IMPORT = re.compile(r"""((?:\bfrom\s*|\bimport\s*\(\s*)["'`])((?:\.\./)+)(scripts/)""")
+
+def rewrite(rel, text):
+    # Up through the file's directories below web/, then extensions/<node>/.
+    ups = "../" * (len(rel.parts) + 1)
+    changed = 0
+    def repl(match):
+        nonlocal changed
+        changed += match.group(2) != ups
+        return match.group(1) + ups + match.group(3)
+    return IMPORT.sub(repl, text), changed
+
+def git(*args):
+    return subprocess.run(["git", "-C", str(node), *args], capture_output=True, check=True).stdout.decode()
+
+if mode == "ours":
+    for name in git("diff", "--name-only", "--", "web").split():
+        rel = pathlib.PurePosixPath(name).relative_to("web")
+        if (node / name).read_bytes().decode() == rewrite(rel, git("show", f"HEAD:{name}"))[0]:
+            print(name)
+    sys.exit(0)
+
+total = 0
+for path in sorted(web.rglob("*.js")):
+    new, changed = rewrite(path.relative_to(web), path.read_bytes().decode())
+    total += changed
+    if changed and mode == "fix":
+        path.write_bytes(new.encode())
+print(total)
+PY
+}
+
 # Reads one key from the install manifest.
 manifest_get() {
   [[ -f "$MANIFEST" ]] || return 0
@@ -794,6 +845,14 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
       resolver_ref="$(git -c safe.directory="$RESOLVER_DIR" -C "$RESOLVER_DIR" describe --tags --exact-match 2>/dev/null || echo 'untagged')"
       if [[ "$resolver_ref" == "$COMFYUI_MODEL_RESOLVER_REF" ]]; then
         success "Model Resolver checkout at ${resolver_ref}"
+        if [[ -x "$VENV_PY" ]]; then
+          pending="$(resolver_imports check)"
+          if [[ "$pending" == "0" ]]; then
+            success "Model Resolver frontend imports work below a path prefix (/comfyui/)"
+          else
+            check_fail "${pending} Model Resolver frontend imports break below a path prefix (/comfyui/)"
+          fi
+        fi
       else
         check_fail "Model Resolver checkout is at ${resolver_ref}, configured COMFYUI_MODEL_RESOLVER_REF is ${COMFYUI_MODEL_RESOLVER_REF}"
       fi
@@ -1154,8 +1213,14 @@ if is_true "$COMFYUI_MODEL_RESOLVER"; then
     if [[ "$resolver_ref" == "$COMFYUI_MODEL_RESOLVER_REF" ]]; then
       success "Checkout already at ${COMFYUI_MODEL_RESOLVER_REF}"
     else
-      if [[ -n "$(as_comfy git -C "$RESOLVER_DIR" status --porcelain --untracked-files=no)" ]] && ! is_true "$FORCE"; then
-        as_comfy git -C "$RESOLVER_DIR" status --short --untracked-files=no | sed 's/^/    /'
+      # A file whose only change is the import rewrite below is not a local
+      # modification. It is excluded rather than reverted: a refused switch
+      # must leave the node working below /comfyui/, and checkout --force
+      # overwrites it anyway.
+      mapfile -t rewritten < <(resolver_imports ours)
+      unrewritten=(-- . "${rewritten[@]/#/:!}")
+      if [[ -n "$(as_comfy git -C "$RESOLVER_DIR" status --porcelain --untracked-files=no "${unrewritten[@]}")" ]] && ! is_true "$FORCE"; then
+        as_comfy git -C "$RESOLVER_DIR" status --short --untracked-files=no "${unrewritten[@]}" | sed 's/^/    /'
         error "Tracked files in ${RESOLVER_DIR} were modified — commit/stash them or re-run with --force to discard"
       fi
       info "Switching ${resolver_ref} → ${COMFYUI_MODEL_RESOLVER_REF}"
@@ -1163,6 +1228,10 @@ if is_true "$COMFYUI_MODEL_RESOLVER"; then
       as_comfy git -c advice.detachedHead=false -C "$RESOLVER_DIR" checkout --quiet --force "$COMFYUI_MODEL_RESOLVER_REF"
       success "Checked out ${COMFYUI_MODEL_RESOLVER_REF}"
     fi
+  fi
+  rewritten_count="$(resolver_imports fix)" || error "Rewriting the Model Resolver's frontend imports failed (see above)"
+  if (( rewritten_count > 0 )); then
+    success "Rewrote ${rewritten_count} frontend imports so the node works below /comfyui/ (upstream bug)"
   fi
   uv_pip install --quiet --requirement "${RESOLVER_DIR}/requirements.txt" --constraint "$CONSTRAINTS" \
     || error "Installing the Model Resolver's requirements under ${CONSTRAINTS} failed (see uv's message above)"
