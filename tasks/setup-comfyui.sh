@@ -180,8 +180,9 @@ ${BOLD}Environment variables${RESET} (all optional):
                                                (v249+, installed by setup-llama-swap.sh):
                                                http://<host>:<llama-swap port>/comfyui/
                                                starts it, any other model stops it.
-                                               Ignores COMFYUI_LISTEN, COMFYUI_PORT and
-                                               COMFYUI_AUTOSTART; switching back cleans up.
+                                               Listens on 127.0.0.1:COMFYUI_PORT; ignores
+                                               COMFYUI_LISTEN and COMFYUI_AUTOSTART;
+                                               switching back cleans up.
   COMFYUI_DIR                    Service directory (default: /srv/comfyui)
   COMFYUI_REF                    ComfyUI release tag to check out (default: v0.35.0)
                                  Upgrades are an explicit change of this value.
@@ -597,8 +598,8 @@ llama_swap_cmd_prefix() {
 # Prints the fragment for the given cmd prefix.
 render_fragment() {
   # shellcheck disable=SC2016  # envsubst expects the literal variable list
-  COMFYUI_CMD_PREFIX="$1" COMFYUI_DIR="$COMFYUI_DIR" \
-    envsubst '${COMFYUI_CMD_PREFIX} ${COMFYUI_DIR}' < "${TEMPLATE_DIR}/llama-swap-fragment.yaml"
+  COMFYUI_CMD_PREFIX="$1" COMFYUI_DIR="$COMFYUI_DIR" COMFYUI_PORT="$COMFYUI_PORT" \
+    envsubst '${COMFYUI_CMD_PREFIX} ${COMFYUI_DIR} ${COMFYUI_PORT}' < "${TEMPLATE_DIR}/llama-swap-fragment.yaml"
 }
 
 # Runs `llama-swap -validate` over config.yaml and the fragment directory. With
@@ -914,6 +915,12 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
           success "ComfyUI loaded (pid ${pid}): user ${owner}, process python, parent llama-swap"
         else
           check_fail "ComfyUI loaded (pid ${pid}) as user ${owner}, process ${comm}, parent ${parent} — expected ${COMFYUI_USER}, python, llama-swap"
+        fi
+        # Local tools (comfy-cli) bypass llama-swap and rely on the fixed port.
+        if curl -fs -o /dev/null --max-time 5 "http://127.0.0.1:${COMFYUI_PORT}/system_stats"; then
+          success "ComfyUI answers locally on 127.0.0.1:${COMFYUI_PORT}"
+        else
+          check_fail "ComfyUI (pid ${pid}) does not answer on 127.0.0.1:${COMFYUI_PORT} — it predates the fixed-port fragment; unload ${LLAMA_SWAP_MODEL_ID} or restart llama-swap"
         fi
         if grep -qE '^Max locked memory +unlimited' "/proc/${pid}/limits" \
            && grep -qE '^Max stack size +67108864' "/proc/${pid}/limits"; then

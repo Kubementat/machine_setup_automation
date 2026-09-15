@@ -7,13 +7,16 @@
 # Websocket traffic does not reset llama-swap's TTL clock, so a finite ttl
 # would kill a job whose browser tab was closed.
 #
-# ${PORT} is a llama-swap macro; everything else was filled in at render time.
+# Fixed port instead of llama-swap's ${PORT}: that macro is assigned by model ID
+# order and moves when models change, but local tools (comfy-cli) talk to
+# ComfyUI directly and need a stable address. Everything below was filled in at
+# render time.
 ---
 models:
   comfyui_auto:
     name: ComfyUI
     cmd: |
       ${COMFYUI_CMD_PREFIX}${COMFYUI_DIR}/bin/comfyui-launch
-      --listen 127.0.0.1 --port ${PORT}
-    proxy: "http://127.0.0.1:${PORT}"
+      --listen 127.0.0.1 --port ${COMFYUI_PORT}
+    proxy: "http://127.0.0.1:${COMFYUI_PORT}"
     checkEndpoint: /system_stats
