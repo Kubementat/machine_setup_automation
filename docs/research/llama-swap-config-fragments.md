@@ -63,7 +63,7 @@ Sources: llama-swap `internal/config/merge.go`, `internal/config/matrix.go`;
   - how clients reach it: `/v1/embeddings` by model name (not verified that the
     API is OpenAI-compatible) or `/upstream/colqwen/…`;
   - matrix: as a small model it should be in most sets.
-- **Removing a fragment is not validated yet.** `remove_llama_swap_integration` in
-  `setup-comfyui.sh` deletes `50-comfyui.yaml` without running `llama-swap
-  -validate` first. If the matrix in `config.yaml` still names `comfyui_auto`,
-  llama-swap fails on its next config load.
+- ~~**Removing a fragment is not validated yet.**~~ Done with `COMFYUI_MCP`:
+  `remove_llama_swap_integration` in `setup-comfyui.sh` now runs `llama-swap
+  -validate` without its fragments first and stops, naming the models to take
+  out of `config.yaml`, when the matrix still refers to them.

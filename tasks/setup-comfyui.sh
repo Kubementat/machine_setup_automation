@@ -41,7 +41,10 @@
 #      systemd    — renders comfyui.service and converges its state
 #      llama-swap — writes a validated config fragment and unit limits for
 #                   llama-swap, restarts it only when those change, and unloads
-#                   an outdated ComfyUI instead of restarting llama-swap
+#                   an outdated ComfyUI instead of restarting llama-swap. With
+#                   COMFYUI_MCP=true it also installs the MCP server
+#                   (comfyui_mcp/) as llama-swap model comfyui-mcp, with its
+#                   own API key, fragment and drop-in
 #
 # IMPORTANT VARIABLES:
 #   COMFYUI_DIR                   - Service directory (default: /srv/comfyui)
@@ -53,6 +56,7 @@
 #   COMFYUI_AUTOSTART             - Enable the service at boot (default: false)
 #   COMFYUI_SAGE_BUILD            - Build SageAttention from source (default: false)
 #   COMFYUI_MODEL_RESOLVER        - Install the Model Resolver custom node (default: true)
+#   COMFYUI_MCP                   - MCP server as llama-swap model comfyui-mcp (default: false)
 #   (see --help for the complete list)
 #
 # DEPENDENCIES:
@@ -62,6 +66,7 @@
 #   - systemctl: service management
 #   - apt-get:   ffmpeg (optional)
 #   - llama-swap v249+ with --config-dir, and setpriv (llama-swap mode only)
+#   - yq, openssl: apiKeys check and key generation (COMFYUI_MCP=true only)
 #
 # OUTPUTS:
 #   - ${COMFYUI_DIR}/ComfyUI/            - ComfyUI checkout (models, custom_nodes, output)
@@ -72,12 +77,16 @@
 #   - /etc/systemd/system/comfyui.service             (systemd mode)
 #   - <llama-swap --config-dir>/50-comfyui.yaml         (llama-swap mode)
 #   - /etc/systemd/system/llama-swap.service.d/50-comfyui.conf (llama-swap mode)
+#   - ${COMFYUI_MCP_DIR}/  app/, .venv/, bin/comfyui-mcp, home/, work/, .env (COMFYUI_MCP=true)
+#   - <llama-swap --config-dir>/51-comfyui-mcp.yaml     (COMFYUI_MCP=true)
+#   - /etc/systemd/system/llama-swap.service.d/51-comfyui-mcp.conf (COMFYUI_MCP=true)
 #
 # USAGE:
 #   ./setup-comfyui.sh                          # install / converge
 #   ./setup-comfyui.sh --check                  # verify, change nothing
 #   COMFYUI_AUTOSTART=true ./setup-comfyui.sh   # also start at boot
 #   COMFYUI_SUPERVISOR=llama-swap ./setup-comfyui.sh   # run behind llama-swap
+#   COMFYUI_SUPERVISOR=llama-swap COMFYUI_MCP=true ./setup-comfyui.sh   # plus MCP server
 #   ./setup-comfyui.sh --force                  # rebuild the venv from scratch
 #   ./setup-comfyui.sh --help
 #
@@ -131,6 +140,8 @@ COMFYUI_SAGE_BUILD_JOBS="${COMFYUI_SAGE_BUILD_JOBS:-4}"
 COMFYUI_MODEL_RESOLVER="${COMFYUI_MODEL_RESOLVER:-true}"
 COMFYUI_MODEL_RESOLVER_REF="${COMFYUI_MODEL_RESOLVER_REF:-v1.2.1}"
 COMFYUI_WAIT_TIMEOUT="${COMFYUI_WAIT_TIMEOUT:-180}"
+COMFYUI_MCP="${COMFYUI_MCP:-false}"
+COMFYUI_MCP_DIR="${COMFYUI_MCP_DIR:-/srv/comfyui-mcp}"
 FORCE="${FORCE:-0}"
 INTERACTIVE="${INTERACTIVE:-false}"
 
@@ -150,6 +161,12 @@ LLAMA_SWAP_MIN_VERSION=249   # first release with the /comfyui/ endpoint
 LLAMA_SWAP_MODEL_ID="comfyui_auto"
 LLAMA_SWAP_DROPIN="/etc/systemd/system/${LLAMA_SWAP_SERVICE}.service.d/50-comfyui.conf"
 FRAGMENT_NAME="50-comfyui.yaml"
+
+# COMFYUI_MCP=true (llama-swap mode only): the MCP server from comfyui_mcp/.
+MCP_MODEL_ID="comfyui-mcp"
+MCP_FRAGMENT_NAME="51-comfyui-mcp.yaml"
+MCP_DROPIN="/etc/systemd/system/${LLAMA_SWAP_SERVICE}.service.d/51-comfyui-mcp.conf"
+MCP_SRC_DIR="${SCRIPT_DIR}/../comfyui_mcp"
 
 CHECK_ONLY=0
 
@@ -217,6 +234,13 @@ ${BOLD}Environment variables${RESET} (all optional):
                                  can reach ComfyUI.
   COMFYUI_MODEL_RESOLVER_REF     Model Resolver release tag (default: v1.2.1)
   COMFYUI_WAIT_TIMEOUT           Seconds to wait for ComfyUI / llama-swap to answer (default: 180)
+  COMFYUI_MCP                    MCP server for this ComfyUI as llama-swap model
+                                 ${MCP_MODEL_ID}, at <llama-swap>/upstream/${MCP_MODEL_ID}/mcp
+                                 (default: false). Needs COMFYUI_SUPERVISOR=llama-swap
+                                 and apiKeys in llama-swap's config; add ${MCP_MODEL_ID}
+                                 to every matrix set yourself. false takes it out of
+                                 llama-swap again (files in COMFYUI_MCP_DIR stay).
+  COMFYUI_MCP_DIR                MCP server directory (default: /srv/comfyui-mcp)
   FORCE                          Same as --force (default: 0)
   INTERACTIVE                    Same as --interactive (default: false)
 
@@ -225,6 +249,7 @@ ${BOLD}Examples:${RESET}
   ./setup-comfyui.sh --check
   COMFYUI_AUTOSTART=true ./setup-comfyui.sh
   COMFYUI_SUPERVISOR=llama-swap ./setup-comfyui.sh
+  COMFYUI_SUPERVISOR=llama-swap COMFYUI_MCP=true ./setup-comfyui.sh
   COMFYUI_REF=v0.36.0 ./setup-comfyui.sh          # upgrade ComfyUI
   COMFYUI_SAGE_BUILD=true ./setup-comfyui.sh      # add SageAttention
 EOF
@@ -602,21 +627,80 @@ render_fragment() {
     envsubst '${COMFYUI_CMD_PREFIX} ${COMFYUI_DIR} ${COMFYUI_PORT}' < "${TEMPLATE_DIR}/llama-swap-fragment.yaml"
 }
 
-# Runs `llama-swap -validate` over config.yaml and the fragment directory. With
-# a <candidate> file it stands in for our fragment, so a change is validated
-# before it is installed. Prints llama-swap's verdict; returns its exit code.
+# Prints the MCP server's fragment for the given cmd prefix.
+render_mcp_fragment() {
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  COMFYUI_CMD_PREFIX="$1" COMFYUI_MCP_DIR="$COMFYUI_MCP_DIR" \
+    envsubst '${COMFYUI_CMD_PREFIX} ${COMFYUI_MCP_DIR}' < "${TEMPLATE_DIR}/llama-swap-mcp-fragment.yaml"
+}
+
+# Prints the llama-swap drop-in that provides the MCP server's key.
+render_mcp_dropin() {
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  COMFYUI_MCP_DIR="$COMFYUI_MCP_DIR" envsubst '${COMFYUI_MCP_DIR}' < "${TEMPLATE_DIR}/llama-swap-mcp-dropin.conf"
+}
+
+# Prints the MCP server's launcher.
+render_mcp_launcher() {
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  COMFYUI_MCP_DIR="$COMFYUI_MCP_DIR" COMFYUI_APP_DIR="$APP_DIR" COMFYUI_PORT="$COMFYUI_PORT" \
+    LS_URL="$LS_URL" COMFYUI_MANIFEST="$MANIFEST" COMFYUI_REPO_URL="$COMFYUI_REPO_URL" \
+    envsubst '${COMFYUI_MCP_DIR} ${COMFYUI_APP_DIR} ${COMFYUI_PORT} ${LS_URL} ${COMFYUI_MANIFEST} ${COMFYUI_REPO_URL}' \
+    < "${TEMPLATE_DIR}/comfyui-mcp-launch.sh"
+}
+
+# True when the installed MCP server code and launcher match this checkout.
+mcp_app_current() {
+  local src
+  for src in "$MCP_SRC_DIR"/*.py "$MCP_SRC_DIR"/requirements.txt; do
+    cmp -s "$src" "${MCP_APP_DIR}/comfyui_mcp/$(basename "$src")" || return 1
+  done
+  [[ -f "$MCP_LAUNCHER" && "$(cat "$MCP_LAUNCHER")" == "$(render_mcp_launcher)" ]]
+}
+
+# Prints the MCP server's llama-swap API key, or nothing. sudo only when the
+# .env is not readable, and never with a password prompt.
+mcp_api_key() {
+  if [[ -r "$MCP_ENV_FILE" ]]; then
+    env_file_get "$MCP_ENV_FILE" COMFYUI_MCP_API_KEY
+  elif sudo -n test -f "$MCP_ENV_FILE" 2>/dev/null; then
+    sudo -n sed -n 's/^[[:space:]]*COMFYUI_MCP_API_KEY=//p' "$MCP_ENV_FILE" | tail -n1
+  fi
+}
+
+# PID of a running MCP server; empty when none.
+mcp_pid() {
+  pgrep -o -f "^${MCP_VENV_PY} -m comfyui_mcp" 2>/dev/null || true
+}
+
+# Runs `llama-swap -validate` over config.yaml and the fragment directory.
+# Each <name> <file> pair stands in for that fragment — an empty <file> leaves
+# it out — so a change is validated before it is installed. The MCP server's
+# key is passed in the environment (not on a command line) for the env macro
+# in its fragment. Prints llama-swap's verdict; returns its exit code.
+#   validate_llama_swap [<name> <file>]...
 validate_llama_swap() {
-  local candidate="${1:-}" dir out rc=0 f
+  local dir out rc=0 f name key
+  local -A replace=()
   local -a config_args=()
+  while (( $# >= 2 )); do replace["$1"]="$2"; shift 2; done
   dir="$(mktemp -d)"
   for f in "$LS_FRAGMENT_DIR"/*.yml "$LS_FRAGMENT_DIR"/*.yaml; do
     [[ -f "$f" ]] || continue
-    if [[ -n "$candidate" && "$(basename "$f")" == "$FRAGMENT_NAME" ]]; then continue; fi
+    name="$(basename "$f")"
+    if [[ -v "replace[$name]" ]]; then continue; fi
     cp "$f" "$dir/"
   done
-  if [[ -n "$candidate" ]]; then cp "$candidate" "${dir}/${FRAGMENT_NAME}"; fi
+  for name in "${!replace[@]}"; do
+    if [[ -n "${replace[$name]}" ]]; then cp "${replace[$name]}" "${dir}/${name}"; fi
+  done
   if [[ -n "$LS_CONFIG" ]]; then config_args=(-config "$LS_CONFIG"); fi
-  out="$("$LS_BIN" -validate "${config_args[@]}" -config-dir "$dir" 2>&1)" || rc=$?
+  key="$(mcp_api_key)"
+  if [[ -n "$key" ]]; then
+    out="$(COMFYUI_MCP_API_KEY="$key" "$LS_BIN" -validate "${config_args[@]}" -config-dir "$dir" 2>&1)" || rc=$?
+  else
+    out="$("$LS_BIN" -validate "${config_args[@]}" -config-dir "$dir" 2>&1)" || rc=$?
+  fi
   rm -rf "$dir"
   printf '%s\n' "$out"
   return "$rc"
@@ -646,50 +730,65 @@ restart_llama_swap() {
   success "llama-swap is back (${LS_URL}/health)"
 }
 
-# True when llama-swap started before the fragment or unit limits last changed
-# (e.g. a restart declined in an earlier --interactive run).
+# True when llama-swap started before its ComfyUI fragments, drop-ins or the
+# MCP server's key last changed (e.g. a restart declined in an earlier
+# --interactive run).
 llama_swap_restart_pending() {
   local started
   started="$(unit_started_epoch "$LLAMA_SWAP_SERVICE")" || return 1
-  inputs_newer_than "$started" "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" "$LLAMA_SWAP_DROPIN"
+  inputs_newer_than "$started" "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" "$LLAMA_SWAP_DROPIN" \
+    "${LS_FRAGMENT_DIR}/${MCP_FRAGMENT_NAME}" "$MCP_DROPIN" "$MCP_ENV_FILE"
 }
 
-# Unloads the llama-swap-managed ComfyUI so its next start picks up changes.
-# The unload endpoint needs llama-swap's API key when apiKeys are set, which
-# this task does not hold — then the operator unloads it in the llama-swap UI.
-unload_comfyui() {
-  local code
-  if is_true "$INTERACTIVE" && ! confirm "ComfyUI is loaded in llama-swap; unload it now (kills any running job)?"; then
-    warn "Not unloaded — ComfyUI keeps running the previous state until its next start"
+# Unloads a llama-swap-managed model so its next start picks up changes. The
+# unload endpoint needs an API key when apiKeys are set: the MCP server's key
+# when COMFYUI_MCP=true installed one, otherwise the operator unloads it in
+# the llama-swap UI.
+#   unload_model <model-id> <display name>
+unload_model() {
+  local model="$1" what="$2" key code
+  if is_true "$INTERACTIVE" && ! confirm "${what} is loaded in llama-swap; unload it now (kills any running job)?"; then
+    warn "Not unloaded — ${what} keeps running the previous state until its next start"
     return 0
   fi
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST --max-time 60 \
-    "${LS_URL}/api/models/unload/${LLAMA_SWAP_MODEL_ID}" || true)"
+  key="$(mcp_api_key)"
+  # The key reaches curl through its config on stdin, not its command line.
+  code="$(printf '%s\n' ${key:+"header = \"Authorization: Bearer ${key}\""} \
+    | curl -s -o /dev/null -w '%{http_code}' -X POST --max-time 60 --config - \
+        "${LS_URL}/api/models/unload/${model}" || true)"
   case "$code" in
-    200) info "Unloaded ${LLAMA_SWAP_MODEL_ID} — the next visit to /comfyui/ starts the new state" ;;
-    401) warn "ComfyUI runs the previous state, and unloading it needs llama-swap's API key. Unload ${LLAMA_SWAP_MODEL_ID} in the llama-swap UI (${LS_URL}/ui)." ;;
-    *)   warn "Could not unload ${LLAMA_SWAP_MODEL_ID} (HTTP ${code:-no answer}) — unload it in the llama-swap UI (${LS_URL}/ui)" ;;
+    200) info "Unloaded ${model} — ${what} starts with the new state next time" ;;
+    401) warn "${what} runs the previous state, and unloading it needs llama-swap's API key. Unload ${model} in the llama-swap UI (${LS_URL}/ui)." ;;
+    *)   warn "Could not unload ${model} (HTTP ${code:-no answer}) — unload it in the llama-swap UI (${LS_URL}/ui)" ;;
   esac
 }
 
 # Removes what COMFYUI_SUPERVISOR=llama-swap installed (files carrying the
-# managed marker only). Returns 0 when something was removed.
+# managed marker only), the MCP server's fragment and drop-in included.
+# Validates first: a config.yaml that still names the ComfyUI models (e.g. in
+# the matrix) would keep llama-swap from loading without the fragments.
+# Returns 0 when something was removed.
 remove_llama_swap_integration() {
-  local removed=1 fragment
+  local removed=1 file validation
+  local -a files=()
   if read_llama_swap_unit 2>/dev/null && [[ -n "$LS_FRAGMENT_DIR" ]]; then
-    fragment="${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
-    if [[ -f "$fragment" ]] && grep -q "$MANAGED_MARKER" "$fragment"; then
-      sudo rm -f "$fragment"
-      info "Removed ${fragment} (COMFYUI_SUPERVISOR=systemd)"
-      removed=0
+    for file in "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" "${LS_FRAGMENT_DIR}/${MCP_FRAGMENT_NAME}"; do
+      if [[ -f "$file" ]] && grep -q "$MANAGED_MARKER" "$file"; then files+=("$file"); fi
+    done
+    if (( ${#files[@]} )) && ! validation="$(validate_llama_swap "$FRAGMENT_NAME" "" "$MCP_FRAGMENT_NAME" "")"; then
+      printf '%s\n' "$validation" | sed 's/^/    /'
+      error "llama-swap would reject its configuration without the ComfyUI fragments — nothing removed. Take ${LLAMA_SWAP_MODEL_ID} and ${MCP_MODEL_ID} out of ${LS_CONFIG:-config.yaml} (e.g. the matrix) first."
     fi
   fi
-  if [[ -f "$LLAMA_SWAP_DROPIN" ]] && grep -q "$MANAGED_MARKER" "$LLAMA_SWAP_DROPIN"; then
-    sudo rm -f "$LLAMA_SWAP_DROPIN"
-    sudo systemctl daemon-reload
-    info "Removed ${LLAMA_SWAP_DROPIN} (COMFYUI_SUPERVISOR=systemd)"
+  for file in "$LLAMA_SWAP_DROPIN" "$MCP_DROPIN"; do
+    if [[ -f "$file" ]] && grep -q "$MANAGED_MARKER" "$file"; then files+=("$file"); fi
+  done
+  for file in "${files[@]}"; do
+    sudo rm -f "$file"
+    info "Removed ${file} (COMFYUI_SUPERVISOR=systemd)"
     removed=0
-  fi
+  done
+  if (( removed == 0 )); then sudo systemctl daemon-reload; fi
   return "$removed"
 }
 
@@ -715,6 +814,10 @@ SAGE_SRC="${COMFYUI_DIR}/src/SageAttention"
 RESOLVER_DIR="${APP_DIR}/custom_nodes/Comfyui-Model-Resolver"
 # ComfyUI skips custom_nodes/*.disabled.
 RESOLVER_OFF="${RESOLVER_DIR}.disabled"
+MCP_ENV_FILE="${COMFYUI_MCP_DIR}/.env"
+MCP_APP_DIR="${COMFYUI_MCP_DIR}/app"
+MCP_VENV_PY="${COMFYUI_MCP_DIR}/.venv/bin/python"
+MCP_LAUNCHER="${COMFYUI_MCP_DIR}/bin/comfyui-mcp"
 
 detect_platform
 if [[ -z "$COMFYUI_TORCH_INDEX_URL" ]]; then
@@ -778,6 +881,9 @@ case "$COMFYUI_SUPERVISOR" in
   systemd|llama-swap) info "Supervisor: ${COMFYUI_SUPERVISOR}" ;;
   *) error "COMFYUI_SUPERVISOR must be 'systemd' or 'llama-swap', got '${COMFYUI_SUPERVISOR}'" ;;
 esac
+if is_true "$COMFYUI_MCP" && [[ "$COMFYUI_SUPERVISOR" != "llama-swap" ]]; then
+  error "COMFYUI_MCP=true needs COMFYUI_SUPERVISOR=llama-swap — the MCP server runs as a llama-swap model"
+fi
 
 id "$COMFYUI_USER" &>/dev/null || error "COMFYUI_USER '${COMFYUI_USER}' does not exist"
 COMFYUI_GROUP="$(id -gn "$COMFYUI_USER")"
@@ -882,6 +988,18 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
         else
           success "Fragment up to date: ${fragment}"
         fi
+        mcp_fragment="${LS_FRAGMENT_DIR}/${MCP_FRAGMENT_NAME}"
+        if is_true "$COMFYUI_MCP"; then
+          if [[ ! -f "$mcp_fragment" ]]; then
+            check_fail "No MCP fragment at ${mcp_fragment}"
+          elif [[ "$(cat "$mcp_fragment")" != "$(render_mcp_fragment "$cmd_prefix")" ]]; then
+            check_fail "${mcp_fragment} is out of date"
+          else
+            success "MCP fragment up to date: ${mcp_fragment}"
+          fi
+        elif [[ -f "$mcp_fragment" ]]; then
+          check_fail "COMFYUI_MCP=false but ${mcp_fragment} is still installed"
+        fi
       else
         check_fail "ComfyUI cannot be started by llama-swap as ${COMFYUI_USER} (see above)"
       fi
@@ -894,6 +1012,31 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
         success "Unit limits up to date: ${LLAMA_SWAP_DROPIN}"
       else
         check_fail "Unit limits missing or out of date: ${LLAMA_SWAP_DROPIN}"
+      fi
+      if is_true "$COMFYUI_MCP"; then
+        if [[ -f "$MCP_DROPIN" && "$(cat "$MCP_DROPIN")" == "$(render_mcp_dropin)" ]]; then
+          success "MCP drop-in up to date: ${MCP_DROPIN}"
+        else
+          check_fail "MCP drop-in missing or out of date: ${MCP_DROPIN}"
+        fi
+        if [[ -n "$(mcp_api_key)" ]]; then
+          success "MCP API key present in ${MCP_ENV_FILE}"
+        else
+          check_fail "No COMFYUI_MCP_API_KEY in ${MCP_ENV_FILE}"
+        fi
+        if mcp_app_current && [[ -x "$MCP_VENV_PY" ]] \
+           && as_comfy env -C "$MCP_APP_DIR" "$MCP_VENV_PY" -c 'import comfyui_mcp.server' 2>/dev/null; then
+          success "MCP server installed and importable: ${COMFYUI_MCP_DIR}"
+        else
+          check_fail "MCP server missing, out of date or not importable in ${COMFYUI_MCP_DIR}"
+        fi
+        if [[ -n "$(mcp_pid)" ]]; then
+          info "MCP server loaded (pid $(mcp_pid)) — ${LS_URL}/upstream/${MCP_MODEL_ID}/mcp"
+        else
+          info "MCP server is not loaded — llama-swap starts it on the first request to /upstream/${MCP_MODEL_ID}/"
+        fi
+      elif [[ -f "$MCP_DROPIN" ]]; then
+        check_fail "COMFYUI_MCP=false but ${MCP_DROPIN} is still installed"
       fi
       if llama_swap_restart_pending; then
         check_fail "llama-swap runs an older configuration — restart pending (sudo systemctl restart ${LLAMA_SWAP_SERVICE})"
@@ -967,12 +1110,14 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
     check_fail "Unit not installed: ${SERVICE_FILE}"
   fi
   if [[ "$COMFYUI_SUPERVISOR" == "systemd" ]]; then
-    if read_llama_swap_unit 2>/dev/null && [[ -n "$LS_FRAGMENT_DIR" && -f "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" ]]; then
-      check_fail "Leftover from llama-swap mode: ${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
+    if read_llama_swap_unit 2>/dev/null && [[ -n "$LS_FRAGMENT_DIR" ]]; then
+      for leftover in "${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}" "${LS_FRAGMENT_DIR}/${MCP_FRAGMENT_NAME}"; do
+        if [[ -f "$leftover" ]]; then check_fail "Leftover from llama-swap mode: ${leftover}"; fi
+      done
     fi
-    if [[ -f "$LLAMA_SWAP_DROPIN" ]]; then
-      check_fail "Leftover from llama-swap mode: ${LLAMA_SWAP_DROPIN}"
-    fi
+    for leftover in "$LLAMA_SWAP_DROPIN" "$MCP_DROPIN"; do
+      if [[ -f "$leftover" ]]; then check_fail "Leftover from llama-swap mode: ${leftover}"; fi
+    done
   fi
 
   echo ""
@@ -1006,6 +1151,19 @@ if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
     error "setpriv (util-linux) is required to start ComfyUI as ${COMFYUI_USER} from llama-swap"
   fi
   info "llama-swap v${LS_VERSION} at ${LS_URL} (runs as ${LS_USER}, fragments in ${LS_FRAGMENT_DIR})"
+  if is_true "$COMFYUI_MCP"; then
+    for cmd in yq openssl; do
+      command -v "$cmd" &>/dev/null || error "${cmd} is required for COMFYUI_MCP=true — run setup-basics.sh first"
+    done
+    [[ -f "${MCP_SRC_DIR}/requirements.txt" ]] || error "COMFYUI_MCP=true but ${MCP_SRC_DIR} is missing from this checkout"
+    # The MCP fragment appends a key to apiKeys. On a llama-swap without keys that
+    # would switch on authentication for every client — and the MCP tools must
+    # never be reachable without a key.
+    api_key_count="$(yq -r '(.apiKeys // []) | length' "$LS_CONFIG" 2>/dev/null || true)"
+    [[ "$api_key_count" =~ ^[1-9][0-9]*$ ]] \
+      || error "COMFYUI_MCP=true needs apiKeys in ${LS_CONFIG:-the llama-swap config} — without them /upstream/${MCP_MODEL_ID}/ would be open to everyone who reaches llama-swap"
+    info "MCP server: llama-swap has ${api_key_count} API key(s); ${MCP_MODEL_ID} gets its own"
+  fi
 fi
 
 if [[ "$SAGE_ENABLED" == "true" ]]; then
@@ -1328,17 +1486,85 @@ else
 fi
 info "ComfyUI arguments: ${COMFYUI_LAUNCH_ARGS}"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MCP SERVER (COMFYUI_MCP=true)
+# ─────────────────────────────────────────────────────────────────────────────
+
+MCP_CHANGED=0
+if is_true "$COMFYUI_MCP"; then
+  step "MCP server (${COMFYUI_MCP_DIR})"
+
+  sudo install -d -m 755 -o "$COMFYUI_USER" -g "$COMFYUI_GROUP" \
+    "$COMFYUI_MCP_DIR" "${COMFYUI_MCP_DIR}/home" "${COMFYUI_MCP_DIR}/work"
+  # Code and launcher belong to root: the service user runs them, cannot change them.
+  sudo install -d -m 755 -o root -g root "${COMFYUI_MCP_DIR}/bin" "$MCP_APP_DIR" "${MCP_APP_DIR}/comfyui_mcp"
+
+  # Read back before generating: llama-swap already holds the stored key.
+  if [[ -z "$(mcp_api_key)" ]]; then
+    printf 'COMFYUI_MCP_API_KEY=sk-comfyui-mcp-%s\n' "$(openssl rand -hex 24)" | env_file_write "$MCP_ENV_FILE"
+    success "Generated the MCP server's llama-swap API key in ${MCP_ENV_FILE}"
+  else
+    success "MCP API key present in ${MCP_ENV_FILE}"
+  fi
+
+  mcp_code_changed=0
+  for src in "$MCP_SRC_DIR"/*.py "$MCP_SRC_DIR"/requirements.txt; do
+    dest="${MCP_APP_DIR}/comfyui_mcp/$(basename "$src")"
+    if ! cmp -s "$src" "$dest"; then
+      sudo install -m 644 -o root -g root "$src" "$dest"
+      mcp_code_changed=1
+    fi
+  done
+  if (( mcp_code_changed )); then
+    MCP_CHANGED=1
+    success "Installed the MCP server code in ${MCP_APP_DIR}"
+  else
+    success "MCP server code up to date"
+  fi
+
+  if is_true "$FORCE" && [[ -d "${COMFYUI_MCP_DIR}/.venv" ]]; then
+    as_comfy rm -rf "${COMFYUI_MCP_DIR}/.venv"
+  fi
+  if [[ ! -x "$MCP_VENV_PY" ]]; then
+    as_comfy "$UV" venv --quiet --python "$COMFYUI_PYTHON" --python-preference system "${COMFYUI_MCP_DIR}/.venv"
+    MCP_CHANGED=1
+  fi
+  # Pinned versions; a no-op when they are already installed.
+  as_comfy "$UV" pip install --quiet --python "$MCP_VENV_PY" --requirement "${MCP_APP_DIR}/comfyui_mcp/requirements.txt"
+  as_comfy env -C "$MCP_APP_DIR" "$MCP_VENV_PY" -c 'import comfyui_mcp.server' \
+    || error "The MCP server does not import — see the error above"
+  success "MCP venv ready: ${COMFYUI_MCP_DIR}/.venv"
+
+  rendered_launcher="$(mktempfile comfyui-mcp)"
+  render_mcp_launcher > "$rendered_launcher"
+  if [[ -f "$MCP_LAUNCHER" ]] && cmp -s "$rendered_launcher" "$MCP_LAUNCHER"; then
+    success "${MCP_LAUNCHER} up to date"
+  else
+    sudo install -m 755 -o root -g root "$rendered_launcher" "$MCP_LAUNCHER"
+    MCP_CHANGED=1
+    success "Wrote ${MCP_LAUNCHER}"
+  fi
+  rm -f "$rendered_launcher"
+fi
+
 if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
   step "llama-swap integration"
 
   # Validate before installing: a broken merge would keep llama-swap from
-  # starting, and every other model with it.
+  # starting, and every other model with it. Without COMFYUI_MCP the MCP
+  # fragment is validated as absent, so a matrix that still names it stops here.
   FRAGMENT="${LS_FRAGMENT_DIR}/${FRAGMENT_NAME}"
+  MCP_FRAGMENT="${LS_FRAGMENT_DIR}/${MCP_FRAGMENT_NAME}"
   rendered_fragment="$(mktempfile "$FRAGMENT_NAME")"
   render_fragment "$COMFYUI_CMD_PREFIX" > "$rendered_fragment"
-  if ! validation="$(validate_llama_swap "$rendered_fragment")"; then
+  rendered_mcp_fragment=""
+  if is_true "$COMFYUI_MCP"; then
+    rendered_mcp_fragment="$(mktempfile "$MCP_FRAGMENT_NAME")"
+    render_mcp_fragment "$COMFYUI_CMD_PREFIX" > "$rendered_mcp_fragment"
+  fi
+  if ! validation="$(validate_llama_swap "$FRAGMENT_NAME" "$rendered_fragment" "$MCP_FRAGMENT_NAME" "$rendered_mcp_fragment")"; then
     printf '%s\n' "$validation" | sed 's/^/    /'
-    error "llama-swap rejects its configuration with the ComfyUI fragment — nothing changed. A hand-written ${LLAMA_SWAP_MODEL_ID} in ${LS_CONFIG:-config.yaml} is the usual cause."
+    error "llama-swap rejects its configuration with the ComfyUI fragments — its config is unchanged. Usual causes: a hand-written ${LLAMA_SWAP_MODEL_ID} or ${MCP_MODEL_ID} in ${LS_CONFIG:-config.yaml}, or a matrix that still names ${MCP_MODEL_ID} after COMFYUI_MCP=false."
   fi
   success "llama-swap -validate: ${validation}"
 
@@ -1373,15 +1599,52 @@ if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
     success "Wrote ${LLAMA_SWAP_DROPIN}"
   fi
 
-  if (( LS_CHANGED )) || llama_swap_restart_pending; then
-    restart_llama_swap "ComfyUI fragment or unit limits changed"
+  if is_true "$COMFYUI_MCP"; then
+    # The drop-in that provides the key goes in before the fragment that uses it.
+    rendered_mcp_dropin="$(mktempfile "$(basename "$MCP_DROPIN")")"
+    render_mcp_dropin > "$rendered_mcp_dropin"
+    if [[ -f "$MCP_DROPIN" ]] && cmp -s "$rendered_mcp_dropin" "$MCP_DROPIN"; then
+      success "${MCP_DROPIN} up to date"
+    else
+      sudo install -d -m 755 "$(dirname "$MCP_DROPIN")"
+      sudo install -m 644 -o root -g root "$rendered_mcp_dropin" "$MCP_DROPIN"
+      sudo systemctl daemon-reload
+      LS_CHANGED=1
+      success "Wrote ${MCP_DROPIN}"
+    fi
+    rm -f "$rendered_mcp_dropin"
+    if [[ -f "$MCP_FRAGMENT" ]] && cmp -s "$rendered_mcp_fragment" "$MCP_FRAGMENT"; then
+      success "${MCP_FRAGMENT} up to date"
+    else
+      sudo install -m 644 -o root -g root "$rendered_mcp_fragment" "$MCP_FRAGMENT"
+      LS_CHANGED=1
+      success "Wrote ${MCP_FRAGMENT}"
+    fi
+    rm -f "$rendered_mcp_fragment"
   else
-    # llama-swap keeps running; only a loaded ComfyUI can be out of date.
+    # The fragment goes before the drop-in whose key it uses.
+    for file in "$MCP_FRAGMENT" "$MCP_DROPIN"; do
+      if [[ -f "$file" ]] && grep -q "$MANAGED_MARKER" "$file"; then
+        sudo rm -f "$file"
+        LS_CHANGED=1
+        info "Removed ${file} (COMFYUI_MCP=false; ${COMFYUI_MCP_DIR} stays)"
+      fi
+    done
+    if (( LS_CHANGED )); then sudo systemctl daemon-reload; fi
+  fi
+
+  if (( LS_CHANGED )) || llama_swap_restart_pending; then
+    restart_llama_swap "ComfyUI fragments, drop-ins or the MCP key changed"
+  else
+    # llama-swap keeps running; only a loaded ComfyUI or MCP server can be out of date.
     COMFYUI_PID="$(comfyui_pid)"
     if [[ -n "$COMFYUI_PID" ]] && { (( RUNTIME_CHANGED )) || is_true "$FORCE" || comfyui_outdated "$COMFYUI_PID"; }; then
-      unload_comfyui
+      unload_model "$LLAMA_SWAP_MODEL_ID" ComfyUI
     else
       success "llama-swap unchanged${COMFYUI_PID:+, loaded ComfyUI is current}"
+    fi
+    if is_true "$COMFYUI_MCP" && [[ -n "$(mcp_pid)" ]] && { (( MCP_CHANGED )) || is_true "$FORCE"; }; then
+      unload_model "$MCP_MODEL_ID" "The MCP server"
     fi
   fi
 else
@@ -1472,10 +1735,16 @@ if is_true "$COMFYUI_MODEL_RESOLVER"; then
 fi
 if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
   echo -e "  ${BOLD}Supervisor${RESET}   llama-swap, model ${LLAMA_SWAP_MODEL_ID} ($([[ -n "$(comfyui_pid)" ]] && echo loaded || echo 'not loaded'))"
+  if is_true "$COMFYUI_MCP"; then
+    echo -e "  ${BOLD}MCP server${RESET}   ${LS_URL}/upstream/${MCP_MODEL_ID}/mcp  (model ${MCP_MODEL_ID}, same API keys as the LLMs)"
+  fi
   echo ""
   echo -e "  Start:         open ${LS_URL}/comfyui/"
   echo -e "  Stop:          request any other model, or unload ${LLAMA_SWAP_MODEL_ID} in ${LS_URL}/ui"
   echo -e "  Logs:          journalctl -u ${LLAMA_SWAP_SERVICE} -f"
+  if is_true "$COMFYUI_MCP"; then
+    echo -e "  Matrix:        add ${MCP_MODEL_ID} to every set in ${LS_CONFIG:-config.yaml}, including the one with ${LLAMA_SWAP_MODEL_ID}"
+  fi
 else
   echo -e "  ${BOLD}Service${RESET}      ${SERVICE_NAME} ($(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true), boot: $(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true))"
   echo ""

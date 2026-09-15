@@ -19,6 +19,10 @@ export XDG_CONFIG_HOME="${COMFYUI_DIR}/config"
 export CUDA_CACHE_PATH="${COMFYUI_DIR}/cache/nv"
 export TRITON_CACHE_DIR="${COMFYUI_DIR}/cache/triton"
 
+# Under llama-swap with COMFYUI_MCP=true, every child inherits the MCP server's
+# API key. Custom nodes are arbitrary code; they do not get it from here.
+unset COMFYUI_MCP_API_KEY
+
 cd "${COMFYUI_APP_DIR}"
 # The argument list is substituted as literal text at render time.
 # shellcheck disable=SC2086

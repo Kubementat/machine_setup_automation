@@ -179,51 +179,35 @@ Never exposed: `comfy install`, `comfy update *`, `comfy launch`/`stop`,
 
 ### C3 — `comfyui-mcp` model, key and secrets (`setup-comfyui.sh`, `COMFYUI_MCP=true`)
 
-Fragment `50-comfyui.yaml` additionally renders:
+Implemented in step 2b as **own files** next to the ComfyUI ones, so each stays
+valid YAML and can be installed or removed on its own:
 
-```yaml
-apiKeys:
-  - "${env.COMFYUI_MCP_API_KEY}"   # appended to the operator's keys
+| File | Template | Content |
+|---|---|---|
+| `<config-dir>/51-comfyui-mcp.yaml` | `llama-swap-mcp-fragment.yaml` | `apiKeys: ["${env.COMFYUI_MCP_API_KEY}"]` (appended to the operator's keys) and model `comfyui-mcp`: `cmd` = `setpriv` prefix + `bin/comfyui-mcp --listen 127.0.0.1 --port ${PORT}`, `checkEndpoint: /health`, `unlisted: true`, `concurrencyLimit: 50` |
+| `llama-swap.service.d/51-comfyui-mcp.conf` | `llama-swap-mcp-dropin.conf` | `EnvironmentFile=${COMFYUI_MCP_DIR}/.env` |
+| `${COMFYUI_MCP_DIR}/bin/comfyui-mcp` (root, 755) | `comfyui-mcp-launch.sh` | exports `HOME`, `COMFY_BIN`, `COMFYUI_WORKSPACE`, `COMFY_LOCAL_URL`, `LLAMA_SWAP_URL`, manifest, repo URL, work dir; runs `python -m comfyui_mcp` |
+| `${COMFYUI_MCP_DIR}/app/comfyui_mcp/` (root, 644) | `comfyui_mcp/` in the repo | server code and `requirements.txt` |
+| `${COMFYUI_MCP_DIR}/.venv` (`COMFYUI_USER`) | — | pinned `mcp` and `comfy-cli` |
+| `${COMFYUI_MCP_DIR}/.env` (mode 600) | — | `COMFYUI_MCP_API_KEY=sk-comfyui-mcp-<48 hex>`, generated once, read back on re-runs |
 
-models:
-  comfyui-mcp:
-    name: ComfyUI MCP
-    unlisted: true
-    cmd: |
-      ${COMFYUI_CMD_PREFIX}${COMFYUI_MCP_DIR}/bin/comfyui-mcp
-      --listen 127.0.0.1 --port ${PORT}
-    proxy: "http://127.0.0.1:${PORT}"
-    checkEndpoint: /health
-    concurrencyLimit: 50          # MCP clients hold streams; default 10 → 429
-    env:
-      - "HOME=${COMFYUI_MCP_DIR}/home"
-      - "XDG_CONFIG_HOME=${COMFYUI_MCP_DIR}/home/.config"
-      - "COMFY_LOCAL_URL=http://127.0.0.1:${COMFYUI_PORT}"
-      - "LLAMA_SWAP_URL=${LS_URL}"
-```
-
-- `${COMFYUI_*}` / `${LS_URL}` are rendered by `envsubst`; `${env.…}` and `${PORT}`
-  stay literal for llama-swap. No secret is written into the fragment.
-- `${COMFYUI_MCP_DIR}/.env` (mode 600, root): `COMFYUI_MCP_API_KEY` (generated once,
-  read back on re-runs), optional `HF_API_TOKEN`, `CIVITAI_API_TOKEN`.
-- Drop-in `50-comfyui.conf` gains `EnvironmentFile=${COMFYUI_MCP_DIR}/.env`, so
-  llama-swap can resolve `${env.COMFYUI_MCP_API_KEY}` and `comfyui-mcp` inherits the
-  variables through `setpriv`.
-- Install: uv venv in `${COMFYUI_MCP_DIR}` with the server and a **pinned**
-  `comfy-cli` (`COMFYUI_MCP_CLI_VERSION`).
-
-**Order matters** (an unset `${env.…}` or an unknown matrix model breaks the whole
-llama-swap config):
-
-- Enable: write `.env` → drop-in with `EnvironmentFile` → `daemon-reload` → validate
-  the new fragment **with the `.env` loaded** (`validate_llama_swap` currently runs
-  without llama-swap's environment and would fail on `${env.…}`) → install fragment →
-  restart llama-swap once (drop-in changed) → operator adds `m` to the matrix.
-- Disable (`COMFYUI_MCP=false` or `COMFYUI_SUPERVISOR=systemd`): validate the config
-  **without** our models first; if the matrix still names `comfyui-mcp` /
-  `comfyui_auto`, stop and print the entries to remove → remove fragment → remove
-  `EnvironmentFile` → restart. This also closes the existing gap in
-  `remove_llama_swap_integration`.
+- No secret is written into a rendered file; the key reaches `llama-swap -validate`
+  and `curl` through the environment / curl's stdin config, never a command line.
+- **apiKeys are required.** Pre-flight refuses `COMFYUI_MCP=true` when `config.yaml`
+  has no `apiKeys`: the fragment would otherwise switch on authentication for every
+  client, and the MCP tools must never be reachable without a key.
+- Every llama-swap child inherits the key from the drop-in; `comfyui-launch` unsets
+  it before ComfyUI starts, so custom nodes do not get it from the environment.
+  (Code running as `COMFYUI_USER` can still read the MCP process environment — same
+  user.)
+- **Validation covers switching off:** the ComfyUI fragment and the MCP fragment
+  (or its absence) are validated together before anything in llama-swap changes. A
+  matrix that still names `comfyui-mcp` after `COMFYUI_MCP=false` stops the run.
+  `COMFYUI_SUPERVISOR=systemd` validates the config without both fragments before
+  removing them (closes the gap noted in `docs/research/llama-swap-config-fragments.md`).
+- A new drop-in, fragment or key restarts llama-swap once; changed server code or
+  launcher only unloads a running `comfyui-mcp` (with the MCP key).
+- `COMFYUI_MCP=false` removes fragment and drop-in; files in `COMFYUI_MCP_DIR` stay.
 
 ### C4 — Matrix membership (operator, `config.yaml`)
 

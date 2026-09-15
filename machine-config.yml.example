@@ -144,6 +144,10 @@ scripts:
       COMFYUI_MODEL_RESOLVER: 'true'
       # COMFYUI_MODEL_RESOLVER_REF: v1.2.1
       # COMFYUI_EXTRA_ARGS: --bf16-unet --bf16-vae --bf16-text-enc
+      # MCP server for this ComfyUI as llama-swap model comfyui-mcp
+      # (COMFYUI_SUPERVISOR=llama-swap and apiKeys in llama-swap required).
+      # Afterwards add comfyui-mcp to every matrix set in llama-swap's config.
+      # COMFYUI_MCP: 'false'
     args: []
   setup-lm-studio:
     enabled: false

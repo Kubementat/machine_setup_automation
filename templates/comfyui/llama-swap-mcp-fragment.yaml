@@ -1,0 +1,27 @@
+# Managed by tasks/setup-comfyui.sh — re-run the task instead of editing this.
+#
+# ComfyUI MCP server as the llama-swap model comfyui-mcp (COMFYUI_MCP=true),
+# reached at /upstream/comfyui-mcp/mcp with the same API keys as the LLMs.
+#
+# In config.yaml, add comfyui-mcp to the matrix set that holds comfyui_auto and
+# to every other set; a model outside a set would evict it (and the reverse).
+#
+# The API key entry is a llama-swap env macro, resolved from the
+# EnvironmentFile of the 51-comfyui-mcp.conf drop-in; the port is llama-swap's
+# port macro. Everything else was filled in at render time.
+---
+apiKeys:
+  - "${env.COMFYUI_MCP_API_KEY}"
+
+models:
+  comfyui-mcp:
+    name: ComfyUI MCP
+    unlisted: true
+    cmd: |
+      ${COMFYUI_CMD_PREFIX}${COMFYUI_MCP_DIR}/bin/comfyui-mcp
+      --listen 127.0.0.1 --port ${PORT}
+    proxy: "http://127.0.0.1:${PORT}"
+    checkEndpoint: /health
+    # MCP clients keep requests open; beyond the default limit of 10,
+    # llama-swap answers 429.
+    concurrencyLimit: 50
