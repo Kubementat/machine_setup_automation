@@ -1,6 +1,6 @@
 # LLM Dev/Server Setup Automation Scripts
 
-> **New Ubuntu machine (e.g Nvidia DGX Spark, AMD Strix Halo) → working local-LLM inference server. One YAML file. One command.**
+> **New Ubuntu machine (e.g Nvidia DGX Spark, AMD Strix Halo) → working local-LLM inference server. Two YAML files. One command.**
 
 A proper inference server is ten install projects wearing a trench coat — GPU toolchain, inference engine, model proxy, web UI, hardened SSH, firewall, monitoring. Done by hand, it's a whole weekend of plumbing before your first token gets generated.
 
@@ -10,6 +10,7 @@ A proper inference server is ten install projects wearing a trench coat — GPU 
 git clone https://github.com/julweber/machine_setup_automation.git
 cd machine_setup_automation
 cp machine-config-inference.yml.example machine-config.yml
+cp models.yml.example models.yml
 ./run-setup.sh apply
 ```
 
@@ -61,9 +62,10 @@ The agent will read the README and discover available scripts on its own, then g
    cd machine_setup_automation
    ```
 2. **Make sure you have sudo rights** - all scripts call `sudo` where required.
-3. **Copy the example configuration** and edit it to enable the services you want:
+3. **Copy the example configurations** and edit it to enable the services and models you want:
    ```bash
    cp machine-config.yml.example machine-config.yml
+   cp models.yml.example models.yml
    ```
    The orchestrator reads `machine-config.yml` by default (or pass `--config <file>` to use a different one).
    Open `machine-config.yml` and set `enabled: true` for the scripts you'd like to install. See the [Configuration](#configuration) section below for the YAML format.
