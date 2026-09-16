@@ -673,6 +673,86 @@ mcp_pid() {
   pgrep -o -f "^${MCP_VENV_PY} -m comfyui_mcp" 2>/dev/null || true
 }
 
+# Prints one line per matrix problem that would keep the MCP server from
+# running next to the other models; returns 1 when there is any.
+#
+# llama-swap evicts every running model outside the set it picks, and a model
+# in no set runs alone — so ${MCP_MODEL_ID} has to share a set with each of
+# them, or an LLM request (or ComfyUI itself) unloads it mid-call.
+# Both matrix spellings are read: top-level and below routing.router.settings.
+matrix_problems() {
+  local matrix='(.matrix // .routing.router.settings.matrix // {})'
+  local name value model token found file problems=0
+  local -a set_names=() set_exprs=()
+  local -A alias_of=()
+
+  if ! command -v yq &>/dev/null; then
+    echo "yq is not installed — cannot check llama-swap's matrix"
+    return 1
+  fi
+  if [[ -z "$LS_CONFIG" || ! -r "$LS_CONFIG" ]]; then
+    echo "cannot read ${LS_CONFIG:-the llama-swap config} — cannot check the matrix"
+    return 1
+  fi
+
+  # A set names models directly or through a matrix var.
+  while read -r name value; do
+    if [[ -n "$name" ]]; then alias_of["$name"]="$value"; fi
+  done < <(yq -r "${matrix}.vars // {} | to_entries | .[] | .key + \" \" + .value" "$LS_CONFIG" 2>/dev/null)
+  while read -r name; do
+    [[ -n "$name" ]] || continue
+    set_names+=("$name")
+    set_exprs+=("$(yq -r "${matrix}.sets.\"${name}\"" "$LS_CONFIG" 2>/dev/null)")
+  done < <(yq -r "${matrix}.sets // {} | keys | .[]" "$LS_CONFIG" 2>/dev/null)
+
+  if (( ${#set_names[@]} == 0 )); then
+    echo "llama-swap has no matrix sets — it runs one model at a time, so every LLM request unloads ${MCP_MODEL_ID}"
+    return 1
+  fi
+
+  # Every model llama-swap knows: config.yaml plus the fragments.
+  local -a models=()
+  while read -r model; do
+    [[ -n "$model" ]] && models+=("$model")
+  done < <({ yq -r '.models // {} | keys | .[]' "$LS_CONFIG" 2>/dev/null
+             for file in "$LS_FRAGMENT_DIR"/*.yml "$LS_FRAGMENT_DIR"/*.yaml; do
+               [[ -f "$file" ]] && yq -r '.models // {} | keys | .[]' "$file" 2>/dev/null
+             done; } | sort -u)
+
+  # A model is "in" a set when the expression names it or one of its vars.
+  model_in_set() {
+    local wanted="$1" index="$2" alias
+    for token in $(tr -c 'A-Za-z0-9_.-' ' ' <<< "${set_exprs[index]}"); do
+      [[ "$token" == "$wanted" ]] && return 0
+      for alias in "${!alias_of[@]}"; do
+        [[ "$token" == "$alias" && "${alias_of[$alias]}" == "$wanted" ]] && return 0
+      done
+    done
+    return 1
+  }
+
+  local i
+  for i in "${!set_names[@]}"; do
+    if ! model_in_set "$MCP_MODEL_ID" "$i"; then
+      echo "matrix set '${set_names[i]}' does not contain ${MCP_MODEL_ID} — loading a model from it unloads the MCP server"
+      problems=1
+    fi
+  done
+  for model in "${models[@]}"; do
+    [[ "$model" == "$MCP_MODEL_ID" ]] && continue
+    found=0
+    for i in "${!set_names[@]}"; do
+      if model_in_set "$model" "$i"; then found=1; break; fi
+    done
+    if (( ! found )); then
+      echo "model '${model}' is in no matrix set — it runs alone and unloads ${MCP_MODEL_ID}"
+      problems=1
+    fi
+  done
+  unset -f model_in_set
+  return "$problems"
+}
+
 # Runs `llama-swap -validate` over config.yaml and the fragment directory.
 # Each <name> <file> pair stands in for that fragment — an empty <file> leaves
 # it out — so a change is validated before it is installed. The MCP server's
@@ -1034,6 +1114,13 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
           info "MCP server loaded (pid $(mcp_pid)) — ${LS_URL}/upstream/${MCP_MODEL_ID}/mcp"
         else
           info "MCP server is not loaded — llama-swap starts it on the first request to /upstream/${MCP_MODEL_ID}/"
+        fi
+        if matrix_findings="$(matrix_problems)"; then
+          success "Matrix: ${MCP_MODEL_ID} shares a set with every model"
+        else
+          while IFS= read -r finding; do
+            [[ -n "$finding" ]] && check_fail "$finding"
+          done <<< "$matrix_findings"
         fi
       elif [[ -f "$MCP_DROPIN" ]]; then
         check_fail "COMFYUI_MCP=false but ${MCP_DROPIN} is still installed"
@@ -1645,6 +1732,18 @@ if [[ "$COMFYUI_SUPERVISOR" == "llama-swap" ]]; then
     fi
     if is_true "$COMFYUI_MCP" && [[ -n "$(mcp_pid)" ]] && { (( MCP_CHANGED )) || is_true "$FORCE"; }; then
       unload_model "$MCP_MODEL_ID" "The MCP server"
+    fi
+  fi
+
+  # The matrix is the operator's part of the setup, so this reports instead of failing.
+  if is_true "$COMFYUI_MCP"; then
+    if matrix_findings="$(matrix_problems)"; then
+      success "Matrix: ${MCP_MODEL_ID} shares a set with every model"
+    else
+      while IFS= read -r finding; do
+        [[ -n "$finding" ]] && warn "$finding"
+      done <<< "$matrix_findings"
+      warn "Put ${MCP_MODEL_ID} into every set of the matrix in ${LS_CONFIG:-config.yaml} — llama-swap picks the change up on its own (--watch-config)"
     fi
   fi
 else

@@ -260,11 +260,13 @@ is in no set.
 
 Each step is tested in the VM suite (`tests/README.md`) before the next.
 
-1. **C1** fixed port.
-2. **C3 + C2 read-only:** model, key, secrets, enable/disable order; tools `nodes`,
-   `discover`, `list_models`, `run_workflow`, `job_status`, `fetch_outputs`,
-   `comfyui_status`.
-3. **C4 check** in `--check`.
+1. ✅ **C1** fixed port.
+2. ✅ **C3 + C2 read-only:** model, key, secrets, enable/disable order; read-only
+   tools (see C2; `fetch_outputs` deferred). Installed and loaded on the target.
+3. ✅ **C4 check:** `matrix_problems` reads the matrix (top-level or
+   `routing.router.settings`, vars resolved) and the models of `config.yaml` plus
+   every fragment. `--check` fails, the install run warns, for every set without
+   `comfyui-mcp` and every model in no set.
 4. **C2 download** with its limits.
 5. **C5** update and rollback.
 
