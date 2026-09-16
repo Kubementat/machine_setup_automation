@@ -306,6 +306,33 @@ Installs the Zed editor on Linux using the official installation script. Support
 
 ### Virtualization
 
+#### `setup-virt-runner.sh`
+Installs the virt-runner CLI tool and all host prerequisites needed to run the VM-based integration test suite. Clones the virt-runner repository, sets up KVM, libvirt, storage pools, user permissions, and installs the CLI tool via uv.
+
+**Features:**
+- Clones the virt-runner repository (default: https://github.com/Kubementat/virt-runner.git)
+- Runs `install-prerequisites.sh` for KVM, libvirt, pools, and user permissions
+- Installs virt-runner as a uv tool
+- Verifies the installation
+- Idempotent: safe to re-run on an already-configured system
+
+**Environment variables (all optional):**
+- `VIRT_RUNNER_REPO` — URL of the virt-runner repository
+- `VIRT_RUNNER_DIR` — Local directory to clone to (default: `~/dev/os_projects/virt-runner`)
+- `VIRT_USERNAME` — User to add to libvirt/kvm groups (default: current user)
+
+**Usage:**
+```bash
+# Automated setup
+./tasks/setup-virt-runner.sh
+
+# Custom repository and directory
+VIRT_RUNNER_REPO=https://github.com/Kubementat/virt-runner.git \
+VIRT_RUNNER_DIR=~/dev/virt-runner ./tasks/setup-virt-runner.sh
+```
+
+> **Note:** After installation, you may need to log out and back in for group membership changes to take effect, or run `newgrp libvirt`.
+
 #### `setup-virtualization.sh`
 Installs or updates libvirt (virtualization API) and virt-manager (graphical VM manager) on Debian/Ubuntu-based systems. Configures the libvirt daemon, default networks, and adds the user to the libvirt group.
 
