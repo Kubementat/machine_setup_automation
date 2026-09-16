@@ -56,6 +56,15 @@ scripts:
       LLAMA_CPP_BUILD_TESTS: 'false'
     args:
       # - --force
+  setup-memory-safety:
+    enabled: false
+    description: Guard against silent unified-memory freezes (swap, earlyoom)
+    env:
+      MEMSAFETY_DISABLE_SWAP: 'true'
+      MEMSAFETY_EARLYOOM: 'true'
+      MEMSAFETY_GPU_CLOCK_CAP: 'false'
+    args: []
+      # - --check
   setup-llama-swap:
     enabled: false
     description: Deploy llama-swap as a systemd service (multi-model LLM proxy)

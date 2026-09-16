@@ -1,0 +1,20 @@
+# /etc/default/earlyoom — managed by tasks/setup-memory-safety.sh
+#
+# Rationale: on unified-memory hardware (DGX Spark GB10) the kernel OOM killer
+# often cannot run at all once memory is exhausted — it needs memory itself.
+# earlyoom watches from userspace and kills a process *before* that point.
+#
+#   -m <pct>   act when available MEMORY falls below this percentage
+#   -s <pct>   act when available SWAP falls below this percentage
+#   -r <sec>   memory report interval (0 disables periodic logging)
+#   --prefer   kill these first  (GPU/inference workloads — expendable, restartable)
+#   --avoid    kill these last   (losing sshd means losing the box remotely)
+#
+# MEASURED on this hardware (GB10, driver 580.142): CUDA allocations DO show up
+# in /proc/meminfo — a 4 GB cudaMalloc moved MemFree by 4.44 GB. earlyoom
+# therefore sees GPU memory pressure and its thresholds are meaningful here.
+#
+# The same measurement showed cgroup accounting does NOT see cudaMalloc
+# (memory.current stayed at 71 MiB for a 4 GB allocation), which is why this
+# script relies on earlyoom rather than a systemd MemoryMax= on GPU services.
+EARLYOOM_ARGS="-m ${MEMSAFETY_EARLYOOM_MEM_PCT} -s ${MEMSAFETY_EARLYOOM_SWAP_PCT} -r 3600 --prefer '^(python3?|vllm|llama-server|llama-swap|comfyui|triton)$' --avoid '^(sshd|systemd|dockerd|containerd|init)$'"
