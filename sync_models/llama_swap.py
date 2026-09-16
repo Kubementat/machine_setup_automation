@@ -115,8 +115,23 @@ def sync(
         f"round-trip — existing comments and manual formatting in this file "
         f"will not be preserved"
     )
-    text = yaml.safe_dump(
-        data, sort_keys=False, default_flow_style=False, allow_unicode=True
+    # Multi-line values (e.g. a model's cmd) must serialize as literal block
+    # scalars; the default emitter renders them single-quoted, and YAML
+    # line-folding then inserts a blank line for every newline in the value.
+    class _BlockDumper(yaml.SafeDumper):
+        pass
+
+    def _str_representer(dumper, value):
+        style = "|" if "\n" in value else None
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+    _BlockDumper.add_representer(str, _str_representer)
+    text = yaml.dump(
+        data,
+        Dumper=_BlockDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
     )
     try:
         atomic_write_text(
