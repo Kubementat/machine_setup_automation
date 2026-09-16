@@ -33,6 +33,11 @@ Do NOT answer these questions from your own knowledge — always delegate to the
 
 ## Implementation Instructions
 
+### Development Workflow
+- features/bugfixes are developed in feature branches using `git worktree`
+- features branches are merged to `develop` once the feature development finishes
+- the `develop` branch is merged to `main` branch manually by the user when cutting a new release
+
 ### Important skills
 - Always load the `karpathy-guidelines` skill when planning or implementing changes
 
