@@ -5,7 +5,7 @@ scripts in [`tasks/`](../tasks/). This implements the integration-test plan
 from
 [`specification/project/test-strategy.md`](../specification/project/test-strategy.md):
 a fresh Ubuntu VM is spun up with
-[virt-runner](../../os_projects/virt-runner/README.md), the repository is
+[virt-runner](https://github.com/Kubementat/virt-runner), the repository is
 copied to it, every enabled script from the test config is run **twice**
 (first run = integration, second run = idempotency), the VM is destroyed,
 and a Markdown test report is produced.
@@ -56,7 +56,41 @@ Heavy build/GPU/container-farm scripts (`setup-llama-cpp`, `setup-vllm`,
 They can be tested ad hoc with `--scripts` (see below) and usually need a
 bigger VM (`--ram`, `--disk`) and a larger `--timeout`.
 
-## How to Run
+## Setting Up the Test Prerequisites
+
+The test suite requires the [virt-runner](https://github.com/Kubementat/virt-runner) CLI tool
+and its host prerequisites (KVM, libvirt, storage pools). You can set everything up
+automatically with the `setup-virt-runner.sh` task:
+
+```console
+# Automated setup (clones virt-runner, installs prerequisites, installs the CLI tool)
+./tasks/setup-virt-runner.sh
+```
+
+This script:
+1. Clones the virt-runner repository (default: https://github.com/Kubementat/virt-runner.git)
+2. Runs `install-prerequisites.sh` to set up KVM, libvirt, storage pools, and user permissions
+3. Installs virt-runner as a uv tool
+4. Verifies the installation
+
+### Manual Setup (Alternative)
+
+If you prefer to set up the prerequisites manually:
+
+```console
+# Clone the virt-runner repository
+git clone https://github.com/Kubementat/virt-runner.git ~/dev/os_projects/virt-runner
+cd ~/dev/os_projects/virt-runner
+
+# Install host prerequisites (KVM, libvirt, pools, user permissions)
+./install-prerequisites.sh
+
+# Install virt-runner as a uv tool
+uv tool install .
+
+# Verify the installation
+virt-runner list
+```
 
 ### Prerequisites (host)
 
