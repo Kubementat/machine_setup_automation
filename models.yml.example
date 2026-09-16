@@ -30,6 +30,7 @@
 #   - ${llama-server-bin} is a llama-swap macro from the live llama-swap
 #     config (left verbatim, defined by setup-llama-swap.sh)
 #   - ${PORT} is a reserved llama-swap macro
+#   - ${models-dir-hf} resolves to the HuggingFace hub cache directory
 #   - long -m paths may use a backslash line continuation (the shell joins
 #     the line break); keep the continuation at the same indentation
 #
@@ -55,38 +56,38 @@ providers:
       # merges the llama-swap serve command under this name.
       - name: qwen3.8-27b
         type: local
-        # Optional per-model env: extends the top-level env for this
-        # model's download/serve commands only.
-        env:
-          - name: EXAMPLE_FLAG
-            value: "--flash-attn on"
         # One or more shell commands, run in order. Re-runs must be
         # idempotent (hf download is a no-op once the pinned revision is
-        # cached).
+        # cached). Use hf download hf://<org>/<repo>/<file> format.
         download:
-          - >-
-            hf download
-            hf://unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
-            --local-dir ${MODEL_DIR}/unsloth/Qwen3.8-27B-GGUF
+          - "hf download hf://unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+          - "hf download hf://unsloth/Qwen3.8-27B-GGUF/mmproj-BF16.gguf"
         serve:
           # llama-swap serve command for this model.
+          # Use ${models-dir-hf}/models--<org>--<repo>/snapshots/latest/<file>
+          # for paths to downloaded model files.
           cmd: |
             ${llama-server-bin}
             --port ${PORT}
-            -m ${MODEL_DIR}/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
+            -m ${models-dir-hf}/models--unsloth--Qwen3.8-27B-GGUF/snapshots/latest/Qwen3.8-27B-UD-Q4_K_XL.gguf
+            --mmproj ${models-dir-hf}/models--unsloth--Qwen3.8-27B-GGUF/snapshots/latest/mmproj-BF16.gguf
             --ctx-size 262144
             --jinja
             --top-p '0.95'
             --top-k '20'
             --min-p '0.0'
             --temp '1.0'
+            --spec-type draft-mtp
+            --spec-draft-n-max 4
+            --cache-type-k q8_0
+            --cache-type-v q8_0
             --verbose
         # Agent metadata written into the coding agents' model configs.
         # Every field is optional — defaults: contextWindow 200000,
         # maxTokens 16000, reasoning true, input [text].
         agent:
           contextWindow: 262144
-          maxTokens: 32000
+          maxTokens: 16000
           reasoning: true
           input: [text, image]
           # Maps agent thinking levels to model thinking parameters;
@@ -100,12 +101,44 @@ providers:
             xhigh: xhigh
             max: null
 
+      # Another local model with different parameters (no MTP, different temp).
+      - name: ornith-1.5-35b
+        type: local
+        download:
+          - "hf download hf://bartowski/Ornith-1.5-35B-A3B-GGUF/Ornith-1.5-35B-A3B-Q5_K_M.gguf"
+          - "hf download hf://bartowski/Ornith-1.5-35B-A3B-GGUF/mmproj-Ornith-1.5-35B-A3B-bf16.gguf"
+        serve:
+          cmd: |
+            ${llama-server-bin}
+            --port ${PORT}
+            -m ${models-dir-hf}/models--bartowski--Ornith-1.5-35B-A3B-GGUF/snapshots/latest/Ornith-1.5-35B-A3B-Q5_K_M.gguf
+            --mmproj ${models-dir-hf}/models--bartowski--Ornith-1.5-35B-A3B-GGUF/snapshots/latest/mmproj-Ornith-1.5-35B-A3B-bf16.gguf
+            --ctx-size 262144
+            --jinja
+            --top-p '1.0'
+            --temp '1.0'
+            --spec-type draft-mtp
+            --spec-draft-n-max 4
+            --verbose
+        agent:
+          contextWindow: 262144
+          maxTokens: 16000
+          reasoning: true
+          input: [text, image]
+          thinkingLevelMap:
+            minimal: null
+            low: low
+            medium: medium
+            high: null
+            xhigh: xhigh
+            max: null
+
   # A remote provider serves its weights elsewhere (another machine's
   # llama-swap, an SGLang/docker stack, ...). Its models are declared
   # type: remote — no downloads, no merge into this machine's llama-swap
   # config; the agents only get the baseUrl/apiKey and agent metadata.
-  - name: remote
-    baseUrl: http://<your-remote-machine-ip>:9292>/v1
+  - name: dgx
+    baseUrl: http://<your-remote-machine-ip>:9292/v1
     apiKey: sk-replace-with-the-remote-llama-swap-key
     models:
       # A remote model: agent metadata only (download/serve are not
@@ -117,3 +150,18 @@ providers:
           contextWindow: 262144
           maxTokens: 32000
           reasoning: true
+          input: [text, image]
+          thinkingLevelMap:
+            minimal: null
+            low: low
+            medium: medium
+            high: null
+            xhigh: xhigh
+            max: null
+
+      # Remote model without thinking levels (simpler config).
+      - name: deepseek-v4-flash
+        type: remote
+        agent:
+          contextWindow: 262144
+          maxTokens: 32000
