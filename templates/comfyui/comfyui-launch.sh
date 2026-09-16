@@ -20,8 +20,9 @@ export CUDA_CACHE_PATH="${COMFYUI_DIR}/cache/nv"
 export TRITON_CACHE_DIR="${COMFYUI_DIR}/cache/triton"
 
 # Under llama-swap with COMFYUI_MCP=true, every child inherits the MCP server's
-# API key. Custom nodes are arbitrary code; they do not get it from here.
-unset COMFYUI_MCP_API_KEY
+# .env (its API key, download tokens). Custom nodes are arbitrary code; they do
+# not get these from here.
+unset COMFYUI_MCP_API_KEY HF_API_TOKEN CIVITAI_API_TOKEN
 
 cd "${COMFYUI_APP_DIR}"
 # The argument list is substituted as literal text at render time.

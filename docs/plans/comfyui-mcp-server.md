@@ -141,18 +141,18 @@ revisions 2025-11-25 and 2026-07-28):
 | `run_workflow(workflow)` → `prompt_id` | writes the API-format JSON to `work/`, `comfy run --workflow <file>` (non-blocking; paid partner nodes are refused because `--allow-spend` is never passed) | ComfyUI queue |
 | `job_status(prompt_id)` | `comfy jobs status <id>` — works without loading ComfyUI | no |
 | `comfyui_status()` | manifest, release tags (`git ls-remote --tags --refs`), whether ComfyUI answers on its port — does not load it. `setup-comfyui.sh --check` is not run: it needs sudo | no |
+| `download_model(url, category, confirm, filename?)` → `download_id` | checks the limits below, then `comfy model download --url … --relative-path models/<category> --filename … --background` (step 4) | model directory |
+| `download_status(download_id)` | `comfy model download-status <id>` | no |
 | `fetch_outputs` | **deferred** until the `jobs status` output format is checked on the target | — |
 
 Every comfy call: `comfy --json --skip-prompt --where local --workspace=<checkout> …`
 with `COMFY_NO_WATCH=1`, `DO_NOT_TRACK=1`, stdin closed. comfy-cli ignores
-`XDG_CONFIG_HOME`; its config follows `HOME`, so the fragment must set `HOME`.
+`XDG_CONFIG_HOME`; its config follows `HOME`, so the launcher sets `HOME`.
 
 Planned for later steps:
 
 | Tool | Does | Changes state |
 |---|---|---|
-| `download_model(url, category, filename?, confirm)` → job id | see "Download limits" | model directory |
-| `download_status(job)` | progress / result | no |
 | `comfyui_update(ref, confirm)` → returns immediately | validates, starts `comfyui-update@<ref>` (C5) | yes |
 | `comfyui_update_log(ref)` | journal of the update unit + post-update `--check` | no |
 | `comfyui_rollback(confirm)` | update to the previous ref from `state/update-history` | yes |
@@ -267,7 +267,14 @@ Each step is tested in the VM suite (`tests/README.md`) before the next.
    `routing.router.settings`, vars resolved) and the models of `config.yaml` plus
    every fragment. `--check` fails, the install run warns, for every set without
    `comfyui-mcp` and every model in no set.
-4. **C2 download** with its limits.
+4. ✅ **C2 download** with its limits (`comfyui_mcp/downloads.py`): comfy-cli
+   `model download --background` does the transfer and already refuses existing
+   or in-flight destinations; the server adds the source/category rules and looks
+   up the size first (Hugging Face `HEAD` without following the CDN redirect,
+   `X-Linked-Size`; CivitAI versions API `sizeKB`). Tokens and limits live in
+   `${COMFYUI_MCP_DIR}/.env` (the key generation keeps those lines);
+   `comfyui-launch` unsets the tokens for ComfyUI. A llama-swap restart kills a
+   running background download (same systemd unit).
 5. **C5** update and rollback.
 
 ## Acceptance criteria

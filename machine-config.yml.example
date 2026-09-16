@@ -147,6 +147,9 @@ scripts:
       # MCP server for this ComfyUI as llama-swap model comfyui-mcp
       # (COMFYUI_SUPERVISOR=llama-swap and apiKeys in llama-swap required).
       # Afterwards add comfyui-mcp to every matrix set in llama-swap's config.
+      # Download tokens and limits (HF_API_TOKEN, CIVITAI_API_TOKEN,
+      # COMFYUI_MCP_DOWNLOAD_MAX_GB, COMFYUI_MCP_DISK_RESERVE_GB) belong in
+      # /srv/comfyui-mcp/.env, not here.
       # COMFYUI_MCP: 'false'
     args: []
   setup-lm-studio:

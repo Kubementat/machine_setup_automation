@@ -22,9 +22,12 @@ from starlette.responses import JSONResponse, Response
 
 from . import comfyui
 from .comfy import ComfyError, run_comfy
+from .downloads import CATEGORIES, DownloadRefused, check_capacity, plan_download
 from .settings import Settings
 
 _PROMPT_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$")
+_DOWNLOAD_ID = re.compile(r"^[0-9a-f]{6,64}$")
+_ACTIVE_DOWNLOAD = ("starting", "downloading")
 _RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _WORKFLOW_MAX_AGE_SECONDS = 7 * 24 * 3600
 
@@ -72,6 +75,15 @@ def _write_workflow(work_dir: Path, workflow: dict[str, Any]) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(workflow, fh)
     return path
+
+
+def _running_download(listing: Any) -> str | None:
+    """Id of an active download in ``comfy model downloads`` output, if any."""
+    rows = listing.get("downloads", []) if isinstance(listing, dict) else []
+    for row in rows:
+        if isinstance(row, dict) and row.get("status") in _ACTIVE_DOWNLOAD:
+            return str(row.get("download_id") or row.get("id") or "?")
+    return None
 
 
 def build_server(settings: Settings) -> MCPServer:
@@ -129,6 +141,57 @@ def build_server(settings: Settings) -> MCPServer:
         if not _PROMPT_ID.match(prompt_id):
             raise ToolError("prompt_id has an unexpected format")
         return await comfy(["jobs", "status", prompt_id], needs_comfyui=False)
+
+    @mcp.tool()
+    async def download_model(
+        url: Annotated[
+            str,
+            Field(
+                description="Hugging Face file URL (https://huggingface.co/<org>/<repo>/resolve/<revision>/<path>) "
+                "or CivitAI download URL (https://civitai.com/api/download/models/<version-id>)."
+            ),
+        ],
+        category: Annotated[str, Field(description=f"Model folder, one of: {', '.join(CATEGORIES)}.")],
+        confirm: Annotated[bool, Field(description="Must be true: the file is written to the server's disk.")],
+        filename: Annotated[
+            str | None, Field(description="Name to save as; default: the name from the URL or from CivitAI.")
+        ] = None,
+    ) -> dict[str, Any]:
+        """Download a model file into ComfyUI's model folder in the background; poll download_status.
+
+        Only Hugging Face and CivitAI, only the known model folders, size known and below the
+        server's limit, enough free disk left, one download at a time, never overwrites."""
+        if not confirm:
+            raise ToolError("set confirm=true to download the file to the server")
+        try:
+            plan = await asyncio.to_thread(plan_download, settings, url, category, filename)
+            await asyncio.to_thread(check_capacity, settings, plan)
+        except DownloadRefused as exc:
+            raise ToolError(str(exc)) from None
+        running = _running_download(await comfy(["model", "downloads"], needs_comfyui=False))
+        if running:
+            raise ToolError(f"download {running} is still running — one download at a time")
+        started = await comfy(
+            [
+                "model", "download",
+                "--url", plan.url,
+                "--relative-path", plan.relative_path,
+                "--filename", plan.filename,
+                "--background",
+            ],
+            needs_comfyui=False,
+            timeout=120.0,
+        )
+        return {"download": started, "path": f"{plan.relative_path}/{plan.filename}", "size_bytes": plan.size_bytes}
+
+    @mcp.tool()
+    async def download_status(
+        download_id: Annotated[str, Field(description="download_id returned by download_model.")],
+    ) -> Any:
+        """Progress and result of a download started by download_model."""
+        if not _DOWNLOAD_ID.match(download_id):
+            raise ToolError("download_id has an unexpected format")
+        return await comfy(["model", "download-status", download_id], needs_comfyui=False)
 
     @mcp.tool()
     async def comfyui_status() -> dict[str, Any]:

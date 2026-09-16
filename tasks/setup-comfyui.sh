@@ -240,6 +240,11 @@ ${BOLD}Environment variables${RESET} (all optional):
                                  and apiKeys in llama-swap's config; add ${MCP_MODEL_ID}
                                  to every matrix set yourself. false takes it out of
                                  llama-swap again (files in COMFYUI_MCP_DIR stay).
+                                 Download tokens and limits go into COMFYUI_MCP_DIR/.env:
+                                 HF_API_TOKEN, CIVITAI_API_TOKEN,
+                                 COMFYUI_MCP_DOWNLOAD_MAX_GB (default: 50),
+                                 COMFYUI_MCP_DISK_RESERVE_GB (default: 100);
+                                 re-run this task afterwards (restarts llama-swap).
   COMFYUI_MCP_DIR                MCP server directory (default: /srv/comfyui-mcp)
   FORCE                          Same as --force (default: 0)
   INTERACTIVE                    Same as --interactive (default: false)
@@ -1586,9 +1591,14 @@ if is_true "$COMFYUI_MCP"; then
   # Code and launcher belong to root: the service user runs them, cannot change them.
   sudo install -d -m 755 -o root -g root "${COMFYUI_MCP_DIR}/bin" "$MCP_APP_DIR" "${MCP_APP_DIR}/comfyui_mcp"
 
-  # Read back before generating: llama-swap already holds the stored key.
+  # Read back before generating: llama-swap already holds the stored key. Lines
+  # the operator added (download tokens and limits) are kept.
   if [[ -z "$(mcp_api_key)" ]]; then
-    printf 'COMFYUI_MCP_API_KEY=sk-comfyui-mcp-%s\n' "$(openssl rand -hex 24)" | env_file_write "$MCP_ENV_FILE"
+    mcp_env_kept="$(sudo cat "$MCP_ENV_FILE" 2>/dev/null || true)"
+    { if [[ -n "$mcp_env_kept" ]]; then printf '%s\n' "$mcp_env_kept"; fi
+      printf 'COMFYUI_MCP_API_KEY=sk-comfyui-mcp-%s\n' "$(openssl rand -hex 24)"
+    } | env_file_write "$MCP_ENV_FILE"
+    unset mcp_env_kept
     success "Generated the MCP server's llama-swap API key in ${MCP_ENV_FILE}"
   else
     success "MCP API key present in ${MCP_ENV_FILE}"

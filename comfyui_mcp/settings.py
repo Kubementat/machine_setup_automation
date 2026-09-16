@@ -26,6 +26,14 @@ class Settings:
     """Writable directory for submitted workflow files."""
     wake_wait_seconds: float
     """How long a tool waits for ComfyUI to load before asking to retry."""
+    download_max_bytes: int
+    """Largest model file download_model accepts."""
+    disk_reserve_bytes: int
+    """Free disk space that must remain after a download."""
+    hf_token: str | None
+    """Hugging Face token (also read by comfy-cli from the same variable)."""
+    civitai_token: str | None
+    """CivitAI token (also read by comfy-cli from the same variable)."""
 
 
 def load_settings(env: dict[str, str] | None = None) -> Settings:
@@ -44,4 +52,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         work_dir=env.get("COMFYUI_MCP_WORK_DIR", f"{mcp_dir}/work"),
         # Below Cloudflare's ~100 s origin timeout, with room for the tool itself.
         wake_wait_seconds=float(env.get("COMFYUI_MCP_WAKE_WAIT", "60")),
+        download_max_bytes=int(float(env.get("COMFYUI_MCP_DOWNLOAD_MAX_GB", "50")) * 1024**3),
+        disk_reserve_bytes=int(float(env.get("COMFYUI_MCP_DISK_RESERVE_GB", "100")) * 1024**3),
+        hf_token=env.get("HF_API_TOKEN") or None,
+        civitai_token=env.get("CIVITAI_API_TOKEN") or None,
     )
