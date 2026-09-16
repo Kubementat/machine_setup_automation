@@ -154,6 +154,9 @@ def download_model(model: ModelSpec) -> list[CommandResult]:
             print(line, end="")
         rc = proc.wait()
         if rc == 0:
+            # Update snapshots/latest symlink so serve commands work without
+            # pinned revisions.
+            _update_latest_symlink(model)
             results.append(CommandResult(model.name, index, "downloaded"))
         else:
             error(
@@ -164,6 +167,47 @@ def download_model(model: ModelSpec) -> list[CommandResult]:
             )
             break  # abort this model's remaining commands
     return results
+
+
+def _update_latest_symlink(model: ModelSpec) -> None:
+    """Create/update a snapshots/latest symlink for each repo in the model.
+
+    After ``hf download`` the cache lives under
+    ``MODEL_DIR/models--<org>--<name>/snapshots/<commit-hash>/``.
+    We create (or update) a ``latest`` symlink pointing at the most recent
+    snapshot directory so serve commands can use ``snapshots/latest/``.
+    """
+    import glob as glob_mod
+
+    model_dir = os.environ.get("MODEL_DIR", os.path.expanduser("~/.cache/huggingface/hub"))
+    for uri_pattern in model.download:
+        # Match hf://<org>/<repo>[@<rev>]/<file> patterns
+        m = re.search(r"hf://([^/]+/[^/@]+?)(?:@[^/]+)?/([^/]+)", uri_pattern)
+        if not m:
+            continue
+        repo_id = m.group(1)
+        filename = m.group(2)
+        # Build the snapshot directory path
+        safe_repo = repo_id.replace("/", "--")
+        snapshot_dir = Path(model_dir) / f"models--{safe_repo}" / "snapshots"
+        if not snapshot_dir.is_dir():
+            continue
+        # Find the most recently modified snapshot directory
+        snapshot_dirs = sorted(
+            glob_mod.glob(str(snapshot_dir / "*")),
+            key=lambda p: os.path.getmtime(p),
+            reverse=True,
+        )
+        if not snapshot_dirs:
+            continue
+        latest_link = snapshot_dir / "latest"
+        target = Path(snapshot_dirs[0]).resolve()
+        try:
+            if latest_link.is_symlink() or latest_link.exists():
+                latest_link.unlink()
+            latest_link.symlink_to(target)
+        except OSError:
+            pass
 
 
 def _disk_space_warning(model_name: str, size: str, expanded_cmd: str) -> None:
