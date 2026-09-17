@@ -182,32 +182,31 @@ Encrypted (AES-256), deduplicated, incremental backups of a machine — includin
 
 | Script | Role |
 |--------|------|
-| `tasks/setup-backup-server.sh` | Makes one machine the storage host: installs borg, verifies the backup drive (mounted + fstab-persistent), creates the per-client repo layout |
-| `tasks/setup-backup-client.sh` | Adds any machine to the fleet: inits its repo (remote over SSH or local), generates passphrase + wrapper + daily systemd timer; with `--services` dumps stateful Docker databases (`pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump`) into each archive before `borg create` |
+| `tasks/setup-backup-server.sh` | Makes one machine the storage host **and** starts a working self-backup: installs borg, prepares storage (a mounted drive, or a local dir on the main fs when none is present), creates the per-client repo layout, then runs the client in local mode |
+| `tasks/setup-backup-client.sh` | Adds any machine to the fleet: auto-detects scope + Docker services (or use `--paths`/`--services`), inits its repo (remote over SSH or local), generates passphrase + wrapper (from `templates/backup-client/`) + daily systemd timer; with `--services` dumps stateful Docker databases (`pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump`) into each archive before `borg create` |
 
 ```bash
-# 1. Storage host (drive already mounted + fstab-persistent)
-sudo ./tasks/setup-backup-server.sh
+# 1. Zero-config: one command → working self-backup (local-disk mode)
+./tasks/setup-backup-server.sh
 
-# 2. A client, with consistent Docker DB dumps, initial full run
+# 2. A remote client, with consistent Docker DB dumps, initial full run
 sudo ./tasks/setup-backup-client.sh --client mybox --host backup.example.com \
-     --user alice --repo-path /media/backups/automatic \
+     --user alice --repo-path /var/backups/automatic \
      --paths "/home/alice /etc /srv" --services "forgejo,planka,kestra" --initial
-
-# 3. Server self-backup (local mode)
-sudo ./tasks/setup-backup-client.sh --client server-self \
-     --paths "/home/alice /etc /srv" --services "forgejo,openwebui"
 
 # Manage: sudo /usr/local/bin/borg-backup-mybox <create|list|check|restore|restore-db>
 ```
 
-> **Prerequisites:** the backup drive must already be mounted and persistent in
-> `/etc/fstab` (the server script only verifies — never formats or mounts);
-> remote clients need key-based SSH to the server first (`ssh-copy-id`); with
-> `--services`, the daily timer runs as the backup user, which therefore needs
-> access to the Docker daemon (user in the `docker` group — `setup-docker.sh`
-> adds it). The generated repo passphrase is the **only** way to read a backup —
-> move `~/.config/borg/<client>.pass` to a password manager when prompted.
+> **Prerequisites:** a bare run stores backups in a local directory on the main
+> disk (`/var/backups` — protects against software corruption, not disk failure);
+> for disk-failure protection mount a separate drive first (or set `BACKUP_MOUNT`
+> to an already-mounted, fstab-persistent path — the server script only verifies,
+> never formats or mounts). Remote clients need key-based SSH to the server first
+> (`ssh-copy-id`); with `--services`, the daily timer runs as the backup user,
+> which therefore needs access to the Docker daemon (user in the `docker` group —
+> `setup-docker.sh` adds it). The generated repo passphrase is the **only** way to
+> read a backup — move `~/.config/borg/<client>.pass` to a password manager when
+> prompted.
 
 Verify any time with `--check` on either script (both exit non-zero on problems;
 client `--check --full` adds a slow integrity check). Day-to-day management goes

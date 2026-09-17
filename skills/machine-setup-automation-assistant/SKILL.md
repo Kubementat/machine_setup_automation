@@ -298,12 +298,43 @@ Enable: `setup-basics`, `setup-docker`, `setup-sshd`, `configure-firewall`, `set
 Backups are the one feature spanning **two roles across multiple machines** — not just
 "enable one task". One machine is the **backup-server** ("dumb" Borg storage host:
 no passphrases, no scheduling); every machine that should be backed up is a
-**backup-client** pushing its own encrypted repo. The server can back itself up
-in local mode (omit `--host`).
+**backup-client** pushing its own encrypted repo. **Zero-config:** running
+`./tasks/setup-backup-server.sh` with no arguments gives a working self-backup
+(auto-detected scope + services, local-disk storage at `/var/backups`, initial full
+backup). The server can back other machines remotely (they become backup-clients).
+
+**How the backup works (process):**
+- **Borg** stores each client as its own **encrypted (AES-256), deduplicated,
+  incremental** repo at `<repo-path>/<client>/` — the first run is a full
+  snapshot, every later run (daily timer) stores only the delta. Each repo is
+  protected by a **per-client passphrase** (`~/.config/borg/<client>.pass`,
+  mode 600); without it the data is unreadable. Retention/pruning defaults to
+  keep **7 daily, 4 weekly, 12 monthly** archives.
+- **Mode:** *remote* pushes over SSH to the server (the server's `borg serve`
+  is implicit in sshd — no extra service to run); *local* mode keeps the repo
+  on the same machine (this is what the server's self-backup uses).
+- **Consistent DBs:** with `--services`, before each `borg create` the
+  `lib/docker-backup.sh` dispatcher dumps each service's database to the staging
+  dir (`/var/backup-staging`) at the engine level — `pg_dump`, `mysqldump`,
+  `sqlite3 .backup`, or `forgejo dump` — so the archive holds a clean,
+  point-in-time DB image, not a volume copied mid-write. The dumps are staged
+  *then* included in the same archive; a failed dump aborts **before**
+  `borg create`, so no partial archive is ever written.
+- **Restore:** `restore <snapshot> [--dest DIR] [paths…]` pulls files back;
+  `restore-db <snapshot> <service> --yes` extracts that service's staged dump
+  from the archive and re-imports it into the running container (destructive).
+- **Artifacts:** repo `<repo-path>/<client>/`, passphrase
+  `~/.config/borg/<client>.pass`, wrapper `/usr/local/bin/borg-backup-<client>`,
+  timer `borg-backup-<client>.timer` (daily, `Persistent=true`, 15 min jitter),
+  staging `/var/backup-staging`.
+- **Idempotent:** re-running setup reuses the existing passphrase and repo,
+  preserves the timer, and stores only the delta.
 
 **Prerequisites checklist — confirm with the user before running anything:**
-- The backup drive on the server is already mounted **and** persistent in
-  `/etc/fstab` (the script only verifies; it never formats, mounts or edits fstab)
+- **Storage:** a bare run uses a local directory on the main disk (`/var/backups`,
+  *local-disk mode* — guards software corruption, not disk failure). For disk-failure
+  protection, mount a separate drive first (or set `BACKUP_MOUNT` to an already-mounted,
+  fstab-persistent path → *drive mode*); the script never formats/mounts/edits fstab.
 - Remote clients have key-based SSH to the server:
   `ssh-copy-id -i ~/.ssh/id_ed25519 -p <port> <user>@<server>`
 - Clients using `--services`: the backup user is in the `docker` group
@@ -316,19 +347,20 @@ in local mode (omit `--host`).
 **Guided flow (server first, then clients, any order afterwards):**
 
 ```bash
-# 1. Storage host:
-sudo ./tasks/setup-backup-server.sh            # then: ... --check
+# 1. Zero-config self-backup (local-disk mode) + verify:
+./tasks/setup-backup-server.sh            # then: ... --check
+#    ...or an external drive:  BACKUP_MOUNT=/mnt/backup ./tasks/setup-backup-server.sh
 
 # 2. Each client (remote mode):
 sudo ./tasks/setup-backup-client.sh --client <name> --host <server> --port 22 \
-     --user <server-user> --repo-path /media/backups/automatic \
+     --user <server-user> --repo-path /var/backups/automatic \
      --paths "<dirs>" --services "<docker-svcs>" --initial
-#    --paths is REQUIRED (no silent default) — decide the scope with the user
+#    --paths / --services can be OMITTED to auto-detect the scope + running services (printed)
 #    --services subset of: forgejo planka kestra nextcloud n8n concourse openwebui omnigent
 #    empty --services = plain file backup; --stop-services <a,b> = compose stop for the whole run
 
 # 3. Verify (client check flags must match the setup call; printed at the end of setup):
-sudo ./tasks/setup-backup-client.sh --client <name> --host <server> --repo-path /media/backups/automatic --check
+sudo ./tasks/setup-backup-client.sh --client <name> --host <server> --repo-path /var/backups/automatic --check
 #    add --full for a slow full integrity check
 
 # 4. Daily ops — generated wrapper per client:

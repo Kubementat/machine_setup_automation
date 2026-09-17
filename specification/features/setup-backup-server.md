@@ -1,7 +1,8 @@
 # Feature: setup-backup-server — Central Borg Backup Infrastructure
 
-> **Status:** v1 implemented — `tasks/setup-backup-server.sh`, `tasks/setup-backup-client.sh`, `lib/docker-backup.sh` (Docker/DB layer included, see *Docker service backup* below)
+> **Status:** v1 implemented — `tasks/setup-backup-server.sh`, `tasks/setup-backup-client.sh`, `lib/docker-backup.sh`, `templates/backup-client/` (Docker/DB layer included, see *Docker service backup* below)
 > **Target:** Any Ubuntu server machine (this repo's normal target), plus any other machine as a backup client
+> **Zero-config:** a standard user can run `./tasks/setup-backup-server.sh` with no arguments and get a working self-backup (auto-detected scope + services, local-disk storage, initial full backup). See *Convenience defaults* below.
 > **Defaults grounded in:** a working reference deployment — see Appendix A
 
 ## Overview
@@ -16,22 +17,35 @@ implicitly through SSH — it is a **dumb storage host**: no scheduling, no plai
 passphrases ever stored there. Adding a machine to the fleet is one client-side script run; the
 server needs no changes.
 
+**Convenience defaults (zero-config).** The scripts are designed so that a standard user can run
+`./tasks/setup-backup-server.sh` (no arguments) and end up with a **working self-backup**:
+- storage defaults to a local directory on the main filesystem (`/var/backups`) when no separate
+  drive is mounted (*local-disk mode* — guards against software corruption, not disk failure; a
+  mounted drive switches to *drive mode* automatically),
+- the backup scope and Docker services are **auto-detected** from the box's layout,
+- the server then runs the client in **local mode** (`--initial`) so a real snapshot exists at the
+  end. Everything is overridable (env vars / flags) and printed. Both scripts escalate per-command
+  with `sudo` (no hard root gate), so they run whether invoked as root or as a sudo-capable user.
+
 This feature delivers two idempotent task scripts, following the repo's one-script-per-component
 pattern:
 
 | Script | Role | Runs on |
 |--------|------|---------|
-| `tasks/setup-backup-server.sh` | Storage host: install borg, verify the backup drive, create the repo directory layout, fix group/ownership | the designated server machine |
-| `tasks/setup-backup-client.sh` | Backup client: install borg, init its repo (over SSH or local), generate passphrase, install wrapper + systemd timer/service, optionally run the initial full backup | any client machine (and the server itself, in local mode) |
+| `tasks/setup-backup-server.sh` | Storage host: install borg, prepare storage (a mounted drive *or* a local directory), create the repo directory layout, fix group/ownership, then run a local-mode self-backup | the designated server machine |
+| `tasks/setup-backup-client.sh` | Backup client: install borg, init its repo (over SSH or local), generate passphrase, install wrapper + systemd timer/service (rendered from `templates/backup-client/`), run the initial full backup | any client machine (and the server itself, in local mode) |
 
 ## Requirements
 
 **Server machine**
-- Ubuntu 22.04+ (amd64 or arm64) with systemd; verified against `borgbackup` 1.4.5 from apt
+- Ubuntu 22.04+ (amd64 or arm64) with systemd; verified against `borgbackup` 1.4.x from apt
   (the feature targets the **borg 1.x CLI** — see Implementation notes)
-- A backup drive **already mounted and fstab-persistent** at a chosen path (the script verifies, it
-  never formats or edits fstab)
-- A regular (non-root) user that may write the repos (default: the sudo caller)
+- A storage location: either a backup drive **already mounted and fstab-persistent** at a chosen
+  path (*drive mode* — the script verifies, it never formats or edits fstab), or **nothing** — in
+  which case it falls back to a local directory on the main filesystem (`/var/backups` by default;
+  *local-disk mode*)
+- A regular (non-root) user that may write the repos (default: the sudo caller / invoking user);
+  the scripts escalate per-command with `sudo`, so the invoking user needs passwordless sudo
 - SSH reachable by clients on a chosen port with **key-based, passwordless** auth for that user
 
 **Client machine**
@@ -40,7 +54,8 @@ pattern:
   repo path (local mode — e.g. the server backing up itself)
 - Same borg major.minor as the server (apt on the same Ubuntu release satisfies this by
   construction; the script warns on mismatch)
-- Source paths chosen by the operator (the script never picks them silently)
+- Source paths chosen by the operator, or **auto-detected** from the box's layout when `--paths`
+  is omitted (the detected scope is printed; see Design Decision 10)
 
 ## Architecture
 
@@ -84,8 +99,12 @@ pattern:
 
 | File | Purpose |
 |------|---------|
-| `tasks/setup-backup-server.sh` | New — server (storage-host) setup |
+| `tasks/setup-backup-server.sh` | New — server (storage-host) setup + local-mode self-backup |
 | `tasks/setup-backup-client.sh` | New — client setup (remote-over-SSH *and* local repo support) |
+| `lib/docker-backup.sh` | New — Docker/DB dump + restore layer (sourced by the wrapper) |
+| `templates/backup-client/borg-backup-wrapper.sh` | New — wrapper template, rendered with `envsubst` into `/usr/local/bin/borg-backup-<client>` |
+| `templates/backup-client/borg-backup.service` | New — one-shot systemd unit template (rendered per client) |
+| `templates/backup-client/borg-backup.timer` | New — daily systemd timer template (rendered per client) |
 | `machine-config.yml.example` | Add `setup-backup-server:` and `setup-backup-client:` entries, both `enabled: false` |
 | `README.md` | Document both scripts under a new "Backups" section (evolution: server → clients) |
 | `CONTEXT.md` | Add "backup-server" / "backup-client" domain terms |
@@ -99,7 +118,7 @@ Generated at runtime on the target host (not committed):
 | `~/.config/borg/<client>.pass` | Repo passphrase (mode 0600, owned by backup user; dir 0700) |
 | `/usr/local/lib/borg-backup/docker-backup.sh` | Installed copy of `lib/docker-backup.sh` (sourced by the wrapper for the Docker/DB dumps) |
 | `/usr/local/bin/borg-backup-<client>` | Wrapper: `create`, `list`, `check [--full]`, `restore`, `restore-db --yes`; carries repo URI, paths, exclusions, retention, services, and `REPO_MOUNT_SOURCE` (local mode: the create-time mount guard) |
-| `<BACKUP_STAGING_DIR>` (default `/srv/backup-staging`) | Dump staging dir, mode 0700 owned by the backup user (created when `--services` is set; the wrapper creates `dumps/` inside it) |
+| `<BACKUP_STAGING_DIR>` (default `/var/backup-staging`) | Dump staging dir, mode 0700 owned by the backup user (created when `--services` is set; the wrapper creates `dumps/` inside it). Default sits outside the typical `/etc /srv /home` scope to avoid the nesting collision. |
 | `/etc/systemd/system/borg-backup-<client>.service` | One-shot service running the wrapper as the backup user |
 | `/etc/systemd/system/borg-backup-<client>.timer` | Daily, `Persistent=true`, `RandomizedDelaySec=15m`, `[Install] WantedBy=timers.target` (without it the unit stays `static` and never survives a reboot) |
 
@@ -118,13 +137,13 @@ Generated at runtime on the target host (not committed):
 | 4 | Encryption | `repokey` (key stored with the repo) + `lz4` compression. `repokey` keeps the key with the data (one passphrase to remember) — the right trade-off for personal/small fleets where the repo host is trusted LAN infrastructure. |
 | 5 | Passphrase handling | Generated by the client script (32 chars from `/dev/urandom`), written **only** to `~/.config/borg/<client>.pass` (0600), read into `BORG_PASSPHRASE` at run time (apt borg 1.x has no `BORG_PASSPHRASE_FILE` support — see Implementation notes). **Never printed** by default (opt-in `--show-passphrase`), never logged to the journal, never transmitted. The operator is instructed to move it to a password manager. The passphrase file must not be placed inside any backed-up path. |
 | 6 | Scheduling | **System-level systemd timer** (not user unit, not cron): runs without login, `Persistent=true` fires a missed run (machine off/lid closed) after boot, `RandomizedDelaySec=15m` spreads load. Service unit runs as the regular backup user (`User=`), not root. |
-| 7 | Unit/wrapper generation | **Inline heredocs** in the script (precedent: `setup-vllm-omni.sh`) — repo URI, paths, exclusions and retention are strongly conditional per machine. Wrapper is generated per client; the unit stays trivial (`ExecStart=/usr/local/bin/borg-backup-<client> create`). |
+| 7 | Unit/wrapper generation | **Template files rendered with `envsubst`** (repo templating convention, precedent: `setup-vllm-omni.sh` / `setup-opencode.sh`): `templates/backup-client/{borg-backup-wrapper.sh,borg-backup.service,borg-backup.timer}` are substituted per client (repo URI, paths, exclusions, retention, client name, retention) and installed into place. `envsubst` uses an **explicit variable list**, so the wrapper's *runtime* bash variables (and `${VAR//…}` / `${arr[@]}` forms) stay literal — only the named render-time values are baked in. The unit stays trivial (`ExecStart=/usr/local/bin/borg-backup-<client> create`). |
 | 8 | Retention (prune) | `--keep-daily=7 --keep-weekly=4 --keep-monthly=12` default, all overridable. Prune runs immediately after each successful create, same archive-name prefix. |
 | 9 | Archive naming | `<client>-%Y-%m-%dT%H:%M:%S` — sortable, unique, prunable by prefix. |
-| 10 | Paths | **No silent default scope.** `BACKUP_PATHS` is required (flag or env) — failing fast beats accidentally backing up the whole disk. Recommended scopes per machine type live in the Rollout section. |
+| 10 | Paths / scope | **Auto-detect, never guess.** When `--paths` is omitted, the script inspects the box and picks `/home/<user>` (if present) + `/etc` + `/srv` (if non-empty) + `/var/lib/docker/volumes` (if Docker is running), **printing the chosen scope**. An explicit `--paths` always wins. This keeps the zero-config path useful while never silently backing up an arbitrary whole-disk scope (the detected set is shown and re-runnable with the printed values). Recommended scopes per machine type live in the Rollout section. |
 | 11 | `--one-file-system` | On by default (skip bind mounts / `/snap` / docker overlay mounts under the paths), overridable off. `--exclude-caches` always on. |
 | 12 | Local repo support | The client script accepts a plain local path as repo location (used for the server backing up itself, or any machine with its own spare drive): `BACKUP_SERVER_HOST` empty → local mode. |
-| 13 | Server script scope | Install + verify + layout + group/ownership only. It never formats, never edits fstab (the drive mount must pre-exist — verified state), never deletes data. |
+| 13 | Server script scope | Install + prepare storage + layout + group/ownership + **local-mode self-backup**. It never formats or edits fstab: a mounted drive is verified present (drive mode); otherwise it uses/creates a local directory on the main fs (local-disk mode) and warns it is same-disk. After storage is ready it runs `setup-backup-client.sh` in local mode (`--initial` by default) so the machine is self-backing up; `--no-self-backup` / `--no-initial` opt out. It never deletes data. |
 | 14 | Idempotency | Re-runs skip completed work: borg present → skip; drive mounted → verify only; repo exists → do **not** re-init, instead verify the stored passphrase opens it (`borg list`); passphrase file exists → keep; units exist → regenerate + `daemon-reload` (config is derived, safe to overwrite); timer enabled → leave. |
 | 15 | `--check` mode | Both scripts get `--check`: report status (install, mount, repo health, timer state, last run result, latest snapshot) and exit non-zero on problems. Intended for future monitoring integration. |
 
@@ -137,25 +156,28 @@ mirror them (`--help` lists both).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BACKUP_MOUNT` | `/media/backups` | Mount point of the backup drive (must already be mounted & fstab-persistent) |
+| `BACKUP_MOUNT` | `/var/backups` | Where repos live. A separate mounted drive = *drive mode* (must be fstab-persistent); the main fs = *local-disk mode* (created if missing; warns same-disk) |
 | `BACKUP_REPO_ROOT` | `${BACKUP_MOUNT}/automatic` | Root for per-client borg repos |
 | `BACKUP_MANUAL_DIR` | `${BACKUP_MOUNT}/manual` | Manual-dump dir (created if missing, never modified) |
-| `BACKUP_GROUP` | `backups` | Group with write access to the mount; `BACKUP_USER` is added to it (created if missing) |
-| `BACKUP_USER` | sudo caller | Regular user that must be able to write repos |
-| `BACKUP_MIN_FREE_GB` | `100` | Warn if the drive has less free space |
+| `BACKUP_GROUP` | `backups` | Group with write access to the storage; `BACKUP_USER` is added to it (created if missing) |
+| `BACKUP_USER` | invoking user | Regular user that must be able to write repos (default: sudo caller / invoking user) |
+| `BACKUP_MIN_FREE_GB` | `100` | Warn if the storage has less free space |
+| `BACKUP_PATHS` / `BACKUP_SERVICES` / `BACKUP_KEEP_*` / `BACKUP_COMPRESSION` | *(empty)* | Self-backup scope, forwarded to the client. Empty = the client auto-detects (see client table). Flags `--no-self-backup` / `--no-initial` disable the self-backup / initial run |
 
 ### `setup-backup-client.sh`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BACKUP_CLIENT_NAME` | `$(hostname)` (lowercased, `[a-z0-9-]`) | Repo dir name & archive prefix (`[a-z0-9-]` only) |
-| `BACKUP_USER` | sudo caller | **Local** user the timer/service runs as (`--local-user`) |
+| `BACKUP_USER` | invoking user | **Local** user the timer/service runs as (`--local-user`) |
 | `BACKUP_SERVER_HOST` | *(empty)* | Server address. **Empty = local repo mode** (Decision 12); non-empty = remote SSH mode |
 | `BACKUP_SERVER_PORT` | `22` | SSH port on the server (Decision 3) |
-| `BACKUP_SERVER_USER` | sudo caller | SSH user on the server (must have key-based, passwordless SSH from the client) |
+| `BACKUP_SERVER_USER` | invoking user | SSH user on the server (must have key-based, passwordless SSH from the client) |
 | `BACKUP_SSH_KEY` | `~<BACKUP_USER>/.ssh/id_ed25519` | Key used for remote mode (preflight, `borg serve`, wrapper `BORG_RSH`) |
-| `BACKUP_REPO_PATH` | `/media/backups/automatic` | Server-side parent dir; final repo = `<BACKUP_REPO_PATH>/<client>/`. Should match the server's `BACKUP_REPO_ROOT` |
-| `BACKUP_PATHS` | *(empty → required)* | Space-separated source paths (e.g. `/home/user /etc /srv`) |
+| `BACKUP_REPO_PATH` | `/var/backups/automatic` | Parent dir for the repo; final repo = `<BACKUP_REPO_PATH>/<client>/`. Should match the server's `BACKUP_REPO_ROOT` |
+| `BACKUP_PATHS` | *(empty → auto-detect)* | Space-separated source paths. Omit to auto-detect `/home/<user>`, `/etc`, `/srv` (if non-empty), `+ /var/lib/docker/volumes` (if Docker running) — the choice is printed (Decision 10) |
+| `BACKUP_SERVICES` | *(empty → auto-detect)* | Comma list of Docker services to dump. Omit to auto-detect installed/running ones (each `/srv/<svc>` dir or matching running container). Empty result = plain file backup |
+| `BACKUP_STAGING_DIR` | `/var/backup-staging` | Host dir for engine dumps; must not be inside `BACKUP_PATHS` (the default sits outside the typical scope) |
 | `BACKUP_EXCLUDE_REGEXES` | see below | Newline/space-separated borg `--exclude` regexes, appended to built-ins |
 | `BACKUP_KEEP_DAILY` / `BACKUP_KEEP_WEEKLY` / `BACKUP_KEEP_MONTHLY` | `7` / `4` / `12` | Prune retention |
 | `BACKUP_COMPRESSION` | `lz4` | `lz4` or `zstd` |
@@ -180,35 +202,48 @@ Always on (not in the regex list): `--exclude-caches`. Append machine-specific r
 
 ### Behavior 1: Server setup (`setup-backup-server.sh`)
 
-Happy path:
-1. Verify running as root (sudo) and systemd present.
-2. Install `borgbackup` if not installed (`apt-get`), report version.
-3. Verify `${BACKUP_MOUNT}` is a mounted filesystem (`findmnt`), ext4/xfs/btrfs, and present in
-   `/etc/fstab` (persistent). Print size / free space; **warn** if free < `BACKUP_MIN_FREE_GB`.
-4. Ensure `${BACKUP_GROUP}` exists (create if missing) and add `BACKUP_USER` to it
+Happy path (privileged ops escalate per-command with `sudo`; runs as root **or** a sudo-capable
+user — no hard root gate):
+1. Install `borgbackup` if not installed (`apt-get`), report version.
+2. **Prepare storage** at `${BACKUP_MOUNT}`:
+   - *drive mode* (a separate mounted filesystem, i.e. `findmnt SOURCE` of the path ≠ the `/`
+     device): verify it is ext4/xfs/btrfs and fstab-persistent (`findmnt --fstab`); print size /
+     free space.
+   - *local-disk mode* (path is on the main fs, e.g. the `/var/backups` default): create the dir
+     if missing and **warn** it is same-disk (guards software corruption, not disk failure).
+   - **warn** in both if free < `BACKUP_MIN_FREE_GB`.
+3. Ensure `${BACKUP_GROUP}` exists (create if missing) and add `BACKUP_USER` to it
    (`usermod -aG`).
-5. Create `${BACKUP_REPO_ROOT}` and `${BACKUP_MANUAL_DIR}` if missing; chown to
+4. Create `${BACKUP_REPO_ROOT}` and `${BACKUP_MANUAL_DIR}` if missing; chown to
    `BACKUP_USER:${BACKUP_GROUP}` mode `775`; verify `BACKUP_USER` can `stat` (and write a
    temp file into) `${BACKUP_REPO_ROOT}` — covers both `root:group` and `user:user` mount
    ownership layouts.
-6. Print summary: repo root, free space, and how to add a client (exact client-script invocation).
+5. **Self-backup** (unless `--no-self-backup`): run `setup-backup-client.sh` in **local mode**
+   with `BACKUP_REPO_PATH=${BACKUP_REPO_ROOT}` and the forwarded scope (`--paths` / `--services` /
+   retention / compression; empty ⇒ the client auto-detects), plus `--initial` (unless
+   `--no-initial`) so a real snapshot exists. Fails the run if the client fails. Otherwise print
+   the exact command to add a client.
+6. Print summary.
 
 Error cases:
 | Case | Behavior |
 |------|----------|
-| Mount missing / not in fstab | **Abort** with message: mount the drive & add fstab entry first (script never does this itself) |
-| Drive not present at all | Abort, list attached disks for diagnosis |
+| Drive mode: mount missing / not in fstab | **Abort** with message: mount the drive & add fstab entry first (script never does this itself) |
+| Local-disk mode: `${BACKUP_MOUNT}` not writable by `BACKUP_USER` | Abort at the write probe with an ownership/options hint |
 | `BACKUP_REPO_ROOT` exists with unexpected ownership | Warn + chown to `BACKUP_USER:${BACKUP_GROUP}` (never delete) |
-| Not root | Abort with `sudo ./tasks/setup-backup-server.sh` hint |
+| Client/self-backup step fails | Abort (non-zero exit) with the client's error output |
 
-`--check`: report install/version, mount+free space, group membership, dir layout; exit 0 only if
-all green. Server `--check` **requires root** (uses `blkid` and a `sudo -u` write probe).
+`--check`: report install/version, storage (drive or local) + free space, group membership, dir
+layout; exit 0 only if all green. `--check` needs only passwordless sudo (uses `blkid` and a
+`sudo -u` write probe), not a root session.
 
 ### Behavior 2: Client setup (`setup-backup-client.sh`)
 
-Happy path (remote mode, first client run):
-1. Verify `BACKUP_CLIENT_NAME` charset; require `BACKUP_PATHS` (every path must exist).
-2. Install `borgbackup` if missing.
+Happy path (first client run; privileged ops escalate per-command with `sudo`):
+1. **Auto-detect** `BACKUP_PATHS` (Decision 10) and `BACKUP_SERVICES` (installed/running supported
+   services) when omitted, printing the result; then verify `BACKUP_CLIENT_NAME` charset and that
+   every path exists.
+2. Install `borgbackup` (and `gettext-base` for `envsubst`) if missing.
 3. **SSH preflight** (remote mode, executed **as the backup user** — the timer user — so host-key
    acceptance lands in the right `~/.ssh/known_hosts`):
    `ssh -o BatchMode=yes -o ConnectTimeout=10 -p PORT USER@HOST true`. On failure **abort** with
@@ -226,8 +261,9 @@ Happy path (remote mode, first client run):
    succeeds → done. Else (repo already exists but passphrase is wrong/missing) → **abort**
    with explicit message: "repo exists but stored passphrase does not open it — restore the
    passphrase file from your password manager, then re-run".
-6. Write the wrapper `/usr/local/bin/borg-backup-<client>` (heredoc; 0755) containing: repo URI,
-    passphrase-file path, paths, excludes, compression, retention, services; subcommands:
+ 6. Render the wrapper `/usr/local/bin/borg-backup-<client>` (0755) from
+    `templates/backup-client/borg-backup-wrapper.sh` via `envsubst` (Decision 7) containing: repo
+    URI, passphrase-file path, paths, excludes, compression, retention, services; subcommands:
     - `create` — optional Docker dumps first (see *Docker service backup*), then
       `borg create --one-file-system --exclude-caches --exclude ... --stats
       <repo>::<client>-%Y-%m-%dT%H:%M:%S <paths... [staging dir]>` and finally
@@ -239,9 +275,11 @@ Happy path (remote mode, first client run):
       destination dir (default `./restore-<client>-<ts>`); **never extracts in place by default**
     - `restore-db <snapshot> <service> --yes` — **destructive** restore of one service's database
       from its dump inside the snapshot (see *Docker service backup*)
-7. Write `.service` (`User=`, `ExecStart=... create`, `Nice=10`, `IOSchedulingClass=best-effort`)
-   and `.timer` (`OnCalendar=daily`, `Persistent=true`, `RandomizedDelaySec=15m`);
-   `systemctl daemon-reload`; `systemctl enable --now borg-backup-<client>.timer`.
+ 7. Render `.service` (`User=`, `ExecStart=... create`, `Nice=10`,
+    `IOSchedulingClass=best-effort`) and `.timer` (`OnCalendar=daily`, `Persistent=true`,
+    `RandomizedDelaySec=15m`) from `templates/backup-client/{borg-backup.service,borg-backup.timer}`
+    via `envsubst` (Decision 7); `systemctl daemon-reload`; `systemctl enable --now
+    borg-backup-<client>.timer`.
 8. Print summary: repo URI, passphrase file path (with "move to password manager" warning), timer
    state, and the exact restore command for the latest snapshot.
 9. If `--initial`: run the wrapper `create` in the foreground (for large source sets this takes a
@@ -250,7 +288,7 @@ Happy path (remote mode, first client run):
 Error cases:
 | Case | Behavior |
 |------|----------|
-| `BACKUP_PATHS` empty or a path missing | Abort with usage |
+| A configured path missing, or auto-detection found nothing to back up | Abort with a hint to pass `--paths` |
 | SSH BatchMode fails | Abort + key-setup instructions (for the configured port) |
 | Repo exists, passphrase missing/wrong | Abort with restore-the-passphrase message (step 5) |
 | Client/server borg major version mismatch | Warn loudly, proceed only with `--force-version-mismatch` |
@@ -403,9 +441,10 @@ with the stripped pattern as well. `restore-db` is destructive and requires `--y
   `borg init` would fall into interactive prompts), so known_hosts acceptance and
   the borg chunk-cache live in the same home the daily service runs as (BatchMode
   would reject the first unattended run otherwise).
-- the staging dir (`/srv/backup-staging` default) is created `install -d -m 700
-  -o <BACKUP_USER>` at setup: the wrapper creates only `dumps/` inside it —
-  the timer user cannot create `/srv/<dir>` itself.
+ - the staging dir (`/var/backup-staging` default) is created `sudo install -d -m 700
+   -o <BACKUP_USER>` at setup: the wrapper creates only `dumps/` inside it —
+   the timer user cannot create `/var/<dir>` itself. The default sits outside the
+   typical `/etc /srv /home` scope so it never trips the "staging inside BACKUP_PATHS" guard.
 - `docker exec` has no `-T` on Docker ≥ 29 (TTY is opt-in via `-t`) — the lib does not
   use it.
 - `pg_dump` inside a container must connect as the container's `POSTGRES_USER` (some
@@ -424,16 +463,20 @@ with the stripped pattern as well. `restore-db` is destructive and requires `--y
 
 Order: **server first, then clients** (any machine, in any order afterwards).
 
-1. **Server machine**: `sudo ./tasks/setup-backup-server.sh` (defaults are fine if the drive is
-   at `/media/backups`; otherwise set `BACKUP_MOUNT` and friends). Verify with `--check`.
+1. **Server machine**: `./tasks/setup-backup-server.sh` (no args) gives a working self-backup in
+   local-disk mode with an auto-detected scope. For a real external drive, mount it first (or point
+   `BACKUP_MOUNT`/`--mount` at an already-mounted, fstab-persistent path → drive mode). Verify with
+   `--check`.
 2. **Each client machine**: ensure key-based SSH to the server's backup port, then
    `sudo ./tasks/setup-backup-client.sh --host <server> --port <port> --user <user>
-   --paths "<paths>" [--initial]`. Move the generated passphrase to a password manager.
-3. **Server self-backup** (recommended): run the client script on the server in local mode
-   (`--host ""`, `BACKUP_REPO_PATH` matching the repo root).
+   --paths "<paths>" [--initial]` (omit `--paths`/`--services` to auto-detect). Move the generated
+   passphrase to a password manager.
+3. **Server self-backup** happens automatically in step 1 (local mode); `--no-self-backup` skips
+   it if you want a storage-only host.
 4. **Restore test** (scenario T4.1 in *Testing*) before declaring the setup done.
 
-Recommended `BACKUP_PATHS` per machine type (operator picks; nothing is default):
+Recommended `BACKUP_PATHS` per machine type (the auto-detect already picks a close default; refine
+with `--paths` as needed):
 
 | Machine type | Recommended paths |
 |--------------|-------------------|
