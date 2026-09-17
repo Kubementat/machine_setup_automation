@@ -380,34 +380,33 @@ GRAFANA_TRAEFIK=true GRAFANA_DOMAIN=grafana.example.com ./tasks/setup-monitoring
 ### Backup
 
 #### `setup-backup-server.sh`
-Turns one machine into the central **Borg** backup storage host: installs `borgbackup`, verifies the backup drive (mounted **and** fstab-persistent — the script never formats or edits fstab), creates the per-client repo layout (`<mount>/automatic`, `<mount>/manual`) and fixes group/ownership. The server is a "dumb" storage host — it stores no passphrases and runs no scheduling (`borg serve` is implicit in sshd). Idempotent; `--check` reports status for monitoring.
+Turns one machine into the central **Borg** backup storage host **and** starts a working self-backup in one step: installs `borgbackup`, prepares storage (a mounted **drive** — verified fstab-persistent — or a **local directory** on the main fs when no drive is present; the script never formats or edits fstab), creates the per-client repo layout (`<mount>/automatic`, `<mount>/manual`) and fixes group/ownership, then runs the client in local mode (`--initial`) so a real snapshot exists. A bare `./tasks/setup-backup-server.sh` with **no arguments** gives a working self-backup (auto-detected scope + services, local-disk storage). The server is a "dumb" storage host — it stores no passphrases and runs no scheduling (`borg serve` is implicit in sshd). Idempotent; `--check` reports status for monitoring. Runs as root or a sudo-capable user (per-command `sudo`).
 
 #### `setup-backup-client.sh`
-Adds any machine to the backup fleet: installs `borgbackup`, initializes the machine's repository (remote over SSH **or** local path), generates a 32-char repo passphrase into `~/.config/borg/<client>.pass` (mode 600), installs the wrapper `/usr/local/bin/borg-backup-<client>` plus a daily systemd timer (`Persistent=true`, 15 min jitter). With `--services`, Docker-based databases are dumped **consistently** before each `borg create` (engine-level `pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump` via `lib/docker-backup.sh`) and staged into the same archive — so an archive never contains a database copied mid-write. Wrapper subcommands: `create`, `list`, `check [--full]`, `restore <snap> [--dest DIR] [paths…]`, `restore-db <snap> <service> --yes` (destructive DB restore).
+Adds any machine to the backup fleet: installs `borgbackup`, **auto-detects** the backup scope (`/home/<user>`, `/etc`, `/srv`, `+ /var/lib/docker/volumes` when Docker is running) and the Docker services to dump (installed/running ones) when `--paths`/`--services` are omitted, initializes the machine's repository (remote over SSH **or** local path), generates a 32-char repo passphrase into `~/.config/borg/<client>.pass` (mode 600), and installs the wrapper `/usr/local/bin/borg-backup-<client>` (rendered from `templates/backup-client/` via `envsubst`) plus a daily systemd timer (`Persistent=true`, 15 min jitter). With `--services`, Docker-based databases are dumped **consistently** before each `borg create` (engine-level `pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump` via `lib/docker-backup.sh`) and staged into the same archive — so an archive never contains a database copied mid-write. Wrapper subcommands: `create`, `list`, `check [--full]`, `restore <snap> [--dest DIR] [paths…]`, `restore-db <snap> <service> --yes` (destructive DB restore).
 
 **Usage examples:**
 ```bash
-# 1. Storage host (drive already mounted + fstab-persistent):
-sudo ./tasks/setup-backup-server.sh
-sudo ./tasks/setup-backup-server.sh --check
+# 1. Zero-config: one command → working self-backup (local-disk mode):
+./tasks/setup-backup-server.sh
+./tasks/setup-backup-server.sh --check
 
-# 2. Remote client (key-based SSH to the server):
+# 2. Storage host with an external drive (already mounted + fstab-persistent):
+BACKUP_MOUNT=/mnt/backup ./tasks/setup-backup-server.sh
+
+# 3. Remote client (key-based SSH to the server):
 sudo ./tasks/setup-backup-client.sh --client mybox \
      --host backup.example.com --port 22 --user alice \
-     --repo-path /media/backups/automatic \
+     --repo-path /var/backups/automatic \
      --paths "/home/alice /etc /srv" \
      --services "forgejo,planka,kestra" --initial
-
-# 3. Server self-backup (local mode):
-sudo ./tasks/setup-backup-client.sh --client server-self \
-     --paths "/home/alice /etc /srv" --services "forgejo,openwebui"
 
 # 4. Manage:
 sudo /usr/local/bin/borg-backup-mybox list
 sudo /usr/local/bin/borg-backup-mybox restore mybox-2026-09-13T04:29:18 --dest /tmp/restore
 ```
 
-> **Notes:** Supported `--services` (dump dispatcher in `lib/docker-backup.sh`): `forgejo, planka, kestra, nextcloud, n8n, concourse, openwebui, omnigent`. Services whose raw data must never be copied mid-write can be quiesced around the whole run with `--stop-services` (short `docker compose stop`/`up -d` window). The staging dir (`/srv/backup-staging` default) must not be inside `--paths`. Installs that customized a service's `CONTAINER_NAME` must mirror it into the backup-side `<SVC>_CONTAINER` override (e.g. `FORGEJO_CONTAINER`). Spec: [specification/features/setup-backup-server.md](specification/features/setup-backup-server.md); research: [docs/research/docker-volume-backup-research.md](docs/research/docker-volume-backup-research.md).
+> **Notes:** Supported `--services` (dump dispatcher in `lib/docker-backup.sh`): `forgejo, planka, kestra, nextcloud, n8n, concourse, openwebui, omnigent`. Services whose raw data must never be copied mid-write can be quiesced around the whole run with `--stop-services` (short `docker compose stop`/`up -d` window). The staging dir (`/var/backup-staging` default) must not be inside `--paths`. Local-disk mode protects against software corruption / accidental deletion but **not** disk failure — mount a separate drive for that. `--no-self-backup` / `--no-initial` on the server script opt out of the automatic self-backup. Installs that customized a service's `CONTAINER_NAME` must mirror it into the backup-side `<SVC>_CONTAINER` override (e.g. `FORGEJO_CONTAINER`). Spec: [specification/features/setup-backup-server.md](specification/features/setup-backup-server.md); research: [docs/research/docker-volume-backup-research.md](docs/research/docker-volume-backup-research.md).
 
 ---
 
