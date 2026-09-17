@@ -76,7 +76,7 @@ declare -a PI_EXTENSIONS=(
   "npm:pi-markdown-preview"
   "npm:pi-web-access"
   "npm:pi-extmgr"
-  "https://github.com/gsanhueza/pi-token-speed"
+  "npm:pi-token-speed"
 )
 
 # =============================================================================

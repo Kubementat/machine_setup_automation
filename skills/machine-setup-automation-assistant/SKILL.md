@@ -255,6 +255,7 @@ When recommending services, group them logically:
 | **Storage / Files** | setup-nextcloud, setup-samba |
 | **Automation** | setup-n8n |
 | **CI/CD** | setup-concourse |
+| **Backup** | setup-backup-server, setup-backup-client |
 | **Remote Access** | setup-anydesk, setup-virtualization |
 | **Speech** | setup-whispering |
 | **Browser** | setup-brave |
@@ -292,6 +293,54 @@ cp models.yml.default models.yml
 ### Self-Hosted Service Stack
 Enable: `setup-basics`, `setup-docker`, `setup-sshd`, `configure-firewall`, `setup-traefik`, `setup-forgejo`, `setup-nextcloud`, `setup-n8n`
 
+## Backup Fleet (setup-backup-server / setup-backup-client)
+
+Backups are the one feature spanning **two roles across multiple machines** — not just
+"enable one task". One machine is the **backup-server** ("dumb" Borg storage host:
+no passphrases, no scheduling); every machine that should be backed up is a
+**backup-client** pushing its own encrypted repo. The server can back itself up
+in local mode (omit `--host`).
+
+**Prerequisites checklist — confirm with the user before running anything:**
+- The backup drive on the server is already mounted **and** persistent in
+  `/etc/fstab` (the script only verifies; it never formats, mounts or edits fstab)
+- Remote clients have key-based SSH to the server:
+  `ssh-copy-id -i ~/.ssh/id_ed25519 -p <port> <user>@<server>`
+- Clients using `--services`: the backup user is in the `docker` group
+  (`setup-docker.sh` adds it) — the daily timer runs as that user
+- Passphrase custody: the client generates a repo passphrase once
+  (`~/.config/borg/<client>.pass`, mode 600). **Lost passphrase = lost backups** —
+  the user must move it to a password manager immediately (never inside a
+  backed-up path)
+
+**Guided flow (server first, then clients, any order afterwards):**
+
+```bash
+# 1. Storage host:
+sudo ./tasks/setup-backup-server.sh            # then: ... --check
+
+# 2. Each client (remote mode):
+sudo ./tasks/setup-backup-client.sh --client <name> --host <server> --port 22 \
+     --user <server-user> --repo-path /media/backups/automatic \
+     --paths "<dirs>" --services "<docker-svcs>" --initial
+#    --paths is REQUIRED (no silent default) — decide the scope with the user
+#    --services subset of: forgejo planka kestra nextcloud n8n concourse openwebui omnigent
+#    empty --services = plain file backup; --stop-services <a,b> = compose stop for the whole run
+
+# 3. Verify (client check flags must match the setup call; printed at the end of setup):
+sudo ./tasks/setup-backup-client.sh --client <name> --host <server> --repo-path /media/backups/automatic --check
+#    add --full for a slow full integrity check
+
+# 4. Daily ops — generated wrapper per client:
+sudo /usr/local/bin/borg-backup-<client> create | list | check [--full]
+sudo /usr/local/bin/borg-backup-<client> restore <snapshot> [--dest DIR] [paths...]
+sudo /usr/local/bin/borg-backup-<client> restore-db <snapshot> <service> --yes   # destructive
+```
+
+Details: README "Backups" section, AUTOMATIONS.md → *Backup*, spec
+`specification/features/setup-backup-server.md`, research
+`docs/research/docker-volume-backup-research.md`.
+
 ## Troubleshooting Tips
 
 - **`yq not found`**: Run `setup-basics` first — it installs `yq`
@@ -305,3 +354,6 @@ Enable: `setup-basics`, `setup-docker`, `setup-sshd`, `configure-firewall`, `set
 - **`models.yml not found`**: Copy `models.yml.default` or `models.yml.example` to `models.yml`
 - **Sync fails with schema error**: Run `./tasks/sync-models.py --agents-only` to skip llama-swap and isolate agent config issues; check YAML indentation and required fields (`name`, `type`, `baseUrl`)
 - **Model not appearing in llama-swap**: Verify `type: local` has both `download` and `serve.cmd`; check that `${MODEL_DIR}` resolves correctly; ensure `setup-llama-cpp` ran first
+- **Backup `--check` says repo not reachable**: passphrase mismatch (wrong `.pass` file), missing SSH key/host key, or borg version mismatch between client and server — re-run client setup (idempotent) and read its output
+- **Backup timer did not run**: `systemctl list-timers 'borg-backup-*'`; `Persistent=true` catches up missed runs — check `journalctl -u borg-backup-<client>.service`
+- **Backup dump fails**: the service or its DB container is not running, or the backup user lacks `docker` group access — dumps abort **before** `borg create`, so no partial archive is ever written

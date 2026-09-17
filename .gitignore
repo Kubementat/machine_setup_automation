@@ -13,5 +13,6 @@ __pycache__/
 tests/reports/
 machine-config.yml
 models.yml
+models.yml.full
 .pi-subagents/
 .omo/

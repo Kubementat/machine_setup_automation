@@ -7,7 +7,7 @@ A proper inference server is ten install projects wearing a trench coat — GPU 
 **machine_setup_automation** is a repo of modular, idempotent Bash scripts plus one orchestrator that turns a fresh **Ubuntu** box into a machine that actually *serves* models — and it's replayable on every machine you buy next.
 
 ```bash
-git clone https://github.com/julweber/machine_setup_automation.git
+git clone https://github.com/Kubementat/machine_setup_automation.git
 cd machine_setup_automation
 cp machine-config-inference.yml.example machine-config.yml
 cp models.yml.example models.yml
@@ -58,7 +58,7 @@ The agent will read the README and discover available scripts on its own, then g
 ## Quick Start
 1. **Clone the repository** (or download a zip) and `cd` into it:
    ```bash
-   git clone https://github.com/julweber/machine_setup_automation.git
+   git clone https://github.com/Kubementat/machine_setup_automation.git
    cd machine_setup_automation
    ```
 2. **Make sure you have sudo rights** - all scripts call `sudo` where required.
@@ -172,6 +172,51 @@ When run without any arguments, `run-setup.sh` prints usage instructions.
 
 All service setup scripts are located in the `tasks/` directory. 
 For a complete list of automations see [AUTOMATIONS.md](AUTOMATIONS.md)
+
+---
+
+## Backups
+
+Encrypted (AES-256), deduplicated, incremental backups of a machine — including
+**consistent** backups of Docker-based databases — using plain BorgBackup:
+
+| Script | Role |
+|--------|------|
+| `tasks/setup-backup-server.sh` | Makes one machine the storage host: installs borg, verifies the backup drive (mounted + fstab-persistent), creates the per-client repo layout |
+| `tasks/setup-backup-client.sh` | Adds any machine to the fleet: inits its repo (remote over SSH or local), generates passphrase + wrapper + daily systemd timer; with `--services` dumps stateful Docker databases (`pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump`) into each archive before `borg create` |
+
+```bash
+# 1. Storage host (drive already mounted + fstab-persistent)
+sudo ./tasks/setup-backup-server.sh
+
+# 2. A client, with consistent Docker DB dumps, initial full run
+sudo ./tasks/setup-backup-client.sh --client mybox --host backup.example.com \
+     --user alice --repo-path /media/backups/automatic \
+     --paths "/home/alice /etc /srv" --services "forgejo,planka,kestra" --initial
+
+# 3. Server self-backup (local mode)
+sudo ./tasks/setup-backup-client.sh --client server-self \
+     --paths "/home/alice /etc /srv" --services "forgejo,openwebui"
+
+# Manage: sudo /usr/local/bin/borg-backup-mybox <create|list|check|restore|restore-db>
+```
+
+> **Prerequisites:** the backup drive must already be mounted and persistent in
+> `/etc/fstab` (the server script only verifies — never formats or mounts);
+> remote clients need key-based SSH to the server first (`ssh-copy-id`); with
+> `--services`, the daily timer runs as the backup user, which therefore needs
+> access to the Docker daemon (user in the `docker` group — `setup-docker.sh`
+> adds it). The generated repo passphrase is the **only** way to read a backup —
+> move `~/.config/borg/<client>.pass` to a password manager when prompted.
+
+Verify any time with `--check` on either script (both exit non-zero on problems;
+client `--check --full` adds a slow integrity check). Day-to-day management goes
+through the generated wrapper `/usr/local/bin/borg-backup-<client>`; its
+`restore-db <snapshot> <service> --yes` restores one
+service's database from its dump (destructive). Details and the per-service
+dump matrix: [AUTOMATIONS.md → Backup](AUTOMATIONS.md#backup), spec:
+[specification/features/setup-backup-server.md](specification/features/setup-backup-server.md),
+research: [docs/research/docker-volume-backup-research.md](docs/research/docker-volume-backup-research.md).
 
 ---
 

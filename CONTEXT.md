@@ -18,6 +18,9 @@
 
 - **task** — a setup script (e.g., `setup-docker.sh`, `setup-llama-swap.sh`)
 - **run a task** — execute one single setup script
+- **backup-server** — the designated machine that stores the fleet's Borg repositories ("dumb" storage host: no passphrases, no scheduling)
+- **backup-client** — any machine that pushes encrypted Borg backups (remote over SSH, or local mode for self-backup)
+- **service dump** — an engine-level consistent database snapshot (`pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump`) staged into a Borg archive before `borg create`, so no archive contains a database copied mid-write
 - **library** — the `lib/` directory containing common functionality shared between task scripts
 - **template** — configuration file templates in `templates/` that get converted/rendered into actual config files for installed services/tools
 - **idempotent** — safe to re-execute (no data loss on repeated runs)

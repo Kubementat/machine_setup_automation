@@ -390,6 +390,38 @@ GRAFANA_TRAEFIK=true GRAFANA_DOMAIN=grafana.example.com ./tasks/setup-monitoring
 
 > **Note:** To monitor a service, label its container `prometheus.scrape=true` and `prometheus.port=<port>`. The Grafana admin password is stored in `/srv/monitoring/grafana/.env` (mode 600). Reload Prometheus config without a restart: `docker compose -f /srv/monitoring/docker-compose.yml exec prometheus wget -q --post-data='' http://localhost:9090/-/reload`.
 
+### Backup
+
+#### `setup-backup-server.sh`
+Turns one machine into the central **Borg** backup storage host: installs `borgbackup`, verifies the backup drive (mounted **and** fstab-persistent — the script never formats or edits fstab), creates the per-client repo layout (`<mount>/automatic`, `<mount>/manual`) and fixes group/ownership. The server is a "dumb" storage host — it stores no passphrases and runs no scheduling (`borg serve` is implicit in sshd). Idempotent; `--check` reports status for monitoring.
+
+#### `setup-backup-client.sh`
+Adds any machine to the backup fleet: installs `borgbackup`, initializes the machine's repository (remote over SSH **or** local path), generates a 32-char repo passphrase into `~/.config/borg/<client>.pass` (mode 600), installs the wrapper `/usr/local/bin/borg-backup-<client>` plus a daily systemd timer (`Persistent=true`, 15 min jitter). With `--services`, Docker-based databases are dumped **consistently** before each `borg create` (engine-level `pg_dump`/`mysqldump`/`sqlite3 .backup`/`forgejo dump` via `lib/docker-backup.sh`) and staged into the same archive — so an archive never contains a database copied mid-write. Wrapper subcommands: `create`, `list`, `check [--full]`, `restore <snap> [--dest DIR] [paths…]`, `restore-db <snap> <service> --yes` (destructive DB restore).
+
+**Usage examples:**
+```bash
+# 1. Storage host (drive already mounted + fstab-persistent):
+sudo ./tasks/setup-backup-server.sh
+sudo ./tasks/setup-backup-server.sh --check
+
+# 2. Remote client (key-based SSH to the server):
+sudo ./tasks/setup-backup-client.sh --client mybox \
+     --host backup.example.com --port 22 --user alice \
+     --repo-path /media/backups/automatic \
+     --paths "/home/alice /etc /srv" \
+     --services "forgejo,planka,kestra" --initial
+
+# 3. Server self-backup (local mode):
+sudo ./tasks/setup-backup-client.sh --client server-self \
+     --paths "/home/alice /etc /srv" --services "forgejo,openwebui"
+
+# 4. Manage:
+sudo /usr/local/bin/borg-backup-mybox list
+sudo /usr/local/bin/borg-backup-mybox restore mybox-2026-09-13T04:29:18 --dest /tmp/restore
+```
+
+> **Notes:** Supported `--services` (dump dispatcher in `lib/docker-backup.sh`): `forgejo, planka, kestra, nextcloud, n8n, concourse, openwebui, omnigent`. Services whose raw data must never be copied mid-write can be quiesced around the whole run with `--stop-services` (short `docker compose stop`/`up -d` window). The staging dir (`/srv/backup-staging` default) must not be inside `--paths`. Installs that customized a service's `CONTAINER_NAME` must mirror it into the backup-side `<SVC>_CONTAINER` override (e.g. `FORGEJO_CONTAINER`). Spec: [specification/features/setup-backup-server.md](specification/features/setup-backup-server.md); research: [docs/research/docker-volume-backup-research.md](docs/research/docker-volume-backup-research.md).
+
 ---
 
 ## Utility Scripts (`utilities/`)
