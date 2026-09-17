@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily borg backup for ${BACKUP_CLIENT_NAME}
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+Unit=${SERVICE_UNIT}
+
+[Install]
+WantedBy=timers.target
