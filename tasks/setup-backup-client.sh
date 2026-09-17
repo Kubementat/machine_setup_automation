@@ -17,7 +17,8 @@
 #       (e.g. the backup server backing up itself — spec Decision 12)
 #
 # KEY ACTIONS:
-#   1. Validates client name / paths / services
+#   1. Auto-detects paths/services when unset, then validates client name /
+#      paths / services
 #   2. Installs borgbackup if missing
 #   3. Remote mode: SSH preflight (BatchMode) + remote borg version compare
 #   4. Repo init (idempotent: reuse / init / abort-with-passphrase-message)
@@ -38,15 +39,16 @@
 #   BACKUP_SERVER_PORT     - SSH port on the server (default: 22)
 #   BACKUP_SERVER_USER     - SSH user on the server (default: sudo caller)
 #   BACKUP_USER            - Local user the timer runs as (default: sudo caller)
-#   BACKUP_REPO_PATH       - Server-side parent dir (default: /media/backups/automatic)
-#   BACKUP_PATHS           - REQUIRED: space-separated source paths
+#   BACKUP_REPO_PATH       - Parent dir for the repo (default: /var/backups/automatic)
+#   BACKUP_PATHS           - Source paths (space-separated). EMPTY = auto-detect
+#                            (/home/<user>, /etc, /srv, + docker volumes)
 #   BACKUP_SERVICES        - Comma list of Docker services to dump before
 #                            'borg create' (forgejo,planka,kestra,nextcloud,
-#                            n8n,concourse,openwebui,omnigent). Empty = plain
-#                            file backup.
+#                            n8n,concourse,openwebui,omnigent). EMPTY = auto-detect
+#                            installed/running ones (none -> plain file backup).
 #   BACKUP_STOP_SERVICES   - Services to `docker compose stop` around the
 #                            whole run (short downtime, raw-copy safety)
-#   BACKUP_STAGING_DIR     - Host dir for dumps (default: /srv/backup-staging;
+#   BACKUP_STAGING_DIR     - Host dir for dumps (default: /var/backup-staging;
 #                            must NOT be inside BACKUP_PATHS)
 #   BACKUP_EXCLUDE_REGEXES - Extra borg --exclude regexes
 #   BACKUP_KEEP_DAILY/WEEKLY/MONTHLY - Prune retention (7/4/12)
@@ -55,16 +57,18 @@
 #   BACKUP_SSH_KEY         - SSH key for remote mode (default: <user>'s id_ed25519)
 #
 # USAGE:
+#   sudo ./tasks/setup-backup-client.sh           # zero-config (auto-detect)
+#
 #   sudo ./tasks/setup-backup-client.sh --client mybox \
 #        --host backup.example.com --port 22 --user alice \
-#        --repo-path /media/backups/automatic \
+#        --repo-path /var/backups/automatic \
 #        --paths "/home/alice /etc /srv" \
 #        --services "forgejo,planka,kestra" \
 #        [--initial]
 #
 #   # Local mode (server backs up itself):
 #   sudo ./tasks/setup-backup-client.sh --client server-self \
-#        --repo-path /media/backups/automatic \
+#        --repo-path /var/backups/automatic \
 #        --paths "/home/alice /etc /srv" --services "forgejo,openwebui"
 #
 # SPEC: specification/features/setup-backup-server.md (Behaviors 2–4)
@@ -85,11 +89,13 @@ BACKUP_CLIENT_NAME="${BACKUP_CLIENT_NAME:-$(hostname | tr '[:upper:]' '[:lower:]
 BACKUP_SERVER_HOST="${BACKUP_SERVER_HOST:-}"
 BACKUP_SERVER_PORT="${BACKUP_SERVER_PORT:-22}"
 BACKUP_SERVER_USER="${BACKUP_SERVER_USER:-${BACKUP_USER}}"
-BACKUP_REPO_PATH="${BACKUP_REPO_PATH:-/media/backups/automatic}"
+BACKUP_REPO_PATH="${BACKUP_REPO_PATH:-/var/backups/automatic}"
 BACKUP_PATHS="${BACKUP_PATHS:-}"
 BACKUP_SERVICES="${BACKUP_SERVICES:-}"
 BACKUP_STOP_SERVICES="${BACKUP_STOP_SERVICES:-}"
-BACKUP_STAGING_DIR="${BACKUP_STAGING_DIR:-/srv/backup-staging}"
+# /var/backup-staging (not /srv/...) so the default does not land inside the
+# default backup scope (/etc /srv /home) and trip the nesting validation.
+BACKUP_STAGING_DIR="${BACKUP_STAGING_DIR:-/var/backup-staging}"
 BACKUP_EXCLUDE_REGEXES="${BACKUP_EXCLUDE_REGEXES:-}"
 BACKUP_KEEP_DAILY="${BACKUP_KEEP_DAILY:-7}"
 BACKUP_KEEP_WEEKLY="${BACKUP_KEEP_WEEKLY:-4}"
@@ -120,11 +126,11 @@ optional consistent Docker/database dumps).
 
 Usage: sudo ./tasks/setup-backup-client.sh [OPTIONS]
 
-Required:
-  --paths <p1 p2 ...>    Source paths to back up (env: BACKUP_PATHS).
-                         No silent default — pick the scope deliberately.
-
 Options:
+  --paths <p1 p2 ...>    Source paths to back up (env: BACKUP_PATHS).
+                         Omit to auto-detect: /home/<user>, /etc, /srv (if
+                         non-empty) and /var/lib/docker/volumes (if Docker is
+                         running). The chosen scope is printed.
   --client <name>        Repo dir name & archive prefix, [a-z0-9-]
                          (env: BACKUP_CLIENT_NAME, default: hostname)
   --host <addr>          Backup server address (env: BACKUP_SERVER_HOST).
@@ -134,18 +140,19 @@ Options:
   --local-user <name>    Local user the timer runs as (env: BACKUP_USER,
                          default: the sudo caller)
   --repo-path <dir>      Parent dir for the repo (env: BACKUP_REPO_PATH,
-                         default: /media/backups/automatic); final repo is
+                          default: /var/backups/automatic); final repo is
                          <repo-path>/<client>/
   --services <a,b>       Docker services to dump consistently before 'borg
-                         create' (env: BACKUP_SERVICES). Supported:
-                         forgejo, planka, kestra, nextcloud, n8n, concourse,
-                         openwebui, omnigent. Empty = plain file backup.
+                         create' (env: BACKUP_SERVICES). Omit to auto-detect
+                         installed/running ones. Supported: forgejo, planka,
+                         kestra, nextcloud, n8n, concourse, openwebui,
+                         omnigent. Empty = plain file backup.
   --stop-services <a,b>  Services to `docker compose stop` around the whole
                          run (env: BACKUP_STOP_SERVICES) — short downtime,
                          for services whose raw data must not be copied
                          mid-write.
   --staging-dir <dir>    Host dir for engine dumps (env: BACKUP_STAGING_DIR,
-                         default: /srv/backup-staging). Must not be inside
+                         default: /var/backup-staging). Must not be inside
                          --paths.
   --keep-daily <n>       Retention: daily archives to keep (default: 7)
   --keep-weekly <n>      Retention: weekly archives to keep (default: 4)
@@ -161,8 +168,11 @@ Options:
   --help, -h             Show this help
 
 Examples:
-  # Remote client:
-  sudo ./tasks/setup-backup-client.sh --client mybox --host backup.example.com \
+   # Zero-config (auto-detects scope + services, local repo, --initial):
+   sudo ./tasks/setup-backup-client.sh
+
+   # Remote client:
+   sudo ./tasks/setup-backup-client.sh --client mybox --host backup.example.com \
        --user alice --paths "/home/alice /etc /srv" \
        --services "forgejo,planka,kestra" --initial
 
@@ -211,6 +221,7 @@ done
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE_DIR="${SCRIPT_DIR}/../templates/backup-client"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/../lib/helpers.sh"
 
@@ -236,6 +247,53 @@ csv_check_services() {
   return 0
 }
 
+# Fill BACKUP_PATHS from the box's actual layout when the operator left it
+# empty. Inspects the machine (not a hardcoded scope) and prints the result;
+# --paths always overrides.
+detect_backup_paths() {
+  local -a paths=()
+  [[ -n "$USER_HOME" && -d "$USER_HOME" ]] && paths+=("$USER_HOME")
+  [[ -d /etc ]] && paths+=("/etc")
+  [[ -d /srv && -n "$(find /srv -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] && paths+=("/srv")
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && [[ -d /var/lib/docker/volumes ]]; then
+    # /var/lib/docker is 0710 root:root — a non-root backup user cannot
+    # traverse it; grant the (traverse-only) bit so the volume contents read.
+    sudo chmod 755 /var/lib/docker 2>/dev/null || true
+    paths+=("/var/lib/docker/volumes")
+  fi
+  if [[ ${#paths[@]} -eq 0 ]]; then
+    error "Could not auto-detect a backup scope and --paths was not given — pass --paths explicitly."
+  fi
+  BACKUP_PATHS="${paths[*]}"
+  info "Auto-detected backup scope: ${BACKUP_PATHS}"
+}
+
+# Fill BACKUP_SERVICES from what is actually installed/running when empty:
+# each supported service with a /srv/<svc> home dir (the setup-*.sh
+# convention) or a running Docker container. Empty result = plain file backup.
+detect_backup_services() {
+  local -a running=() detected=()
+  local svc name
+  if command -v docker >/dev/null 2>&1; then
+    mapfile -t running < <(docker ps --format '{{.Names}}' 2>/dev/null)
+  fi
+  for svc in $SUPPORTED_SERVICES; do
+    [[ -d "/srv/${svc}" ]] && { detected+=("$svc"); continue; }
+    for name in "${running[@]}"; do
+      if [[ "$name" == *"$svc"* ]]; then
+        detected+=("$svc")
+        break
+      fi
+    done
+  done
+  BACKUP_SERVICES="$(IFS=,; echo "${detected[*]:-}")"
+  if [[ -n "$BACKUP_SERVICES" ]]; then
+    info "Auto-detected services to back up: ${BACKUP_SERVICES}"
+  else
+    info "No supported Docker services detected — plain file backup (add any with --services)"
+  fi
+}
+
 validate() {
   if [[ ! "$BACKUP_CLIENT_NAME" =~ ^[a-z0-9-]+$ ]]; then
     error "BACKUP_CLIENT_NAME must match [a-z0-9-]+ (got: ${BACKUP_CLIENT_NAME})"
@@ -251,7 +309,7 @@ validate() {
   csv_check_services "$BACKUP_STOP_SERVICES" "BACKUP_STOP_SERVICES entry"
 
   if [[ -z "$BACKUP_PATHS" ]]; then
-    error "BACKUP_PATHS is required (flag --paths or env). No silent default scope: pick the paths deliberately."
+    error "No backup scope: pass --paths (auto-detection found nothing to back up)."
   fi
   local -a paths
   read -r -a paths <<< "$BACKUP_PATHS"
@@ -313,10 +371,21 @@ ensure_borg() {
     success "borgbackup installed ($(borg --version | head -n1))"
   else
     step "Installing BorgBackup"
-    apt-get update -qq
-    apt-get install -y borgbackup
+    sudo apt-get update -qq
+    sudo apt-get install -y borgbackup
     success "borgbackup installed ($(borg --version | head -n1))"
   fi
+}
+
+ensure_envsubst() {
+  # Needed to render the wrapper + systemd units from templates/backup-client/.
+  if command -v envsubst >/dev/null 2>&1; then
+    return 0
+  fi
+  step "Installing gettext-base (envsubst)"
+  sudo apt-get update -qq
+  sudo apt-get install -y gettext-base
+  command -v envsubst >/dev/null 2>&1 || error "envsubst not available after install"
 }
 
 ssh_preflight() {
@@ -362,10 +431,10 @@ resolve_repo_uri() {
       local parent="${repo_path%/*}"
       local need_parent=false need_repo=false
       if [[ -n "$parent" && ! -e "$parent" ]]; then need_parent=true; fi
-      [[ -e "$repo_path" ]] || need_repo=true
-      mkdir -p "$repo_path"
-      [[ -n "$parent" ]] && $need_parent && chown "${BACKUP_USER}:${BACKUP_USER}" "$parent"
-      $need_repo && chown "${BACKUP_USER}:${BACKUP_USER}" "$repo_path"
+       [[ -e "$repo_path" ]] || need_repo=true
+       sudo mkdir -p "$repo_path"
+       [[ -n "$parent" ]] && $need_parent && sudo chown "${BACKUP_USER}:${BACKUP_USER}" "$parent"
+       $need_repo && sudo chown "${BACKUP_USER}:${BACKUP_USER}" "$repo_path"
       # Device the repo lives on, baked into the wrapper's create() mount
       # guard (empty when findmnt is unavailable/fails -> guard inactive).
       REPO_MOUNT_SOURCE="$(findmnt -n -o SOURCE --target "$repo_path" 2>/dev/null || true)"
@@ -382,8 +451,8 @@ ensure_passphrase() {
   if [[ -f "$PASS_FILE" ]]; then
     success "Reusing existing passphrase file: ${PASS_FILE}"
   else
-    mkdir -p "$PASS_DIR"
-    chmod 700 "$PASS_DIR"
+    sudo mkdir -p "$PASS_DIR"
+    sudo chmod 700 "$PASS_DIR"
     local pass group
     group="$(id -gn "${BACKUP_USER}" 2>/dev/null || id -gn)"
     # NOT `tr | head -c` — under `set -o pipefail` the killed `tr` makes the
@@ -391,11 +460,11 @@ ensure_passphrase() {
     # process substitution's exit status is ignored.
     IFS= read -r -n 32 pass < <(tr -dc 'A-Za-z0-9' < /dev/urandom)
     [[ -n "$pass" ]] || error "Could not generate a passphrase from /dev/urandom"
-    printf '%s\n' "$pass" | install -m 600 -o "$BACKUP_USER" -g "$group" /dev/stdin "$PASS_FILE"
+    printf '%s\n' "$pass" | sudo install -m 600 -o "$BACKUP_USER" -g "$group" /dev/stdin "$PASS_FILE"
     # .config may have just been created by root (mkdir -p above) — the whole
     # chain must belong to BACKUP_USER, who reads the file at every backup run.
-    chown "${BACKUP_USER}:${group}" "$PASS_DIR" 2>/dev/null || true
-    chown "${BACKUP_USER}:${group}" "${PASS_DIR%/*}" 2>/dev/null || true
+    sudo chown "${BACKUP_USER}:${group}" "$PASS_DIR" 2>/dev/null || true
+    sudo chown "${BACKUP_USER}:${group}" "${PASS_DIR%/*}" 2>/dev/null || true
     success "Generated passphrase -> ${PASS_FILE} (mode 600)"
     warn "Move this passphrase to your password manager NOW — it is stored only at ${PASS_FILE} and the passphrase file must never land inside a backed-up path."
   fi
@@ -452,22 +521,22 @@ install_lib() {
   step "Installing backup library"
   local src="${SCRIPT_DIR}/../lib/docker-backup.sh"
   [[ -f "$src" ]] || error "lib/docker-backup.sh not found next to the task scripts: ${src}"
-  mkdir -p "$(dirname "$LIB_DEST")"
-  install -m 644 "$src" "$LIB_DEST"
+  sudo mkdir -p "$(dirname "$LIB_DEST")"
+  sudo install -m 644 "$src" "$LIB_DEST"
   success "Installed ${LIB_DEST}"
 }
 
 install_staging_dir() {
   # The wrapper (running as BACKUP_USER) creates <staging>/dumps itself, but
-  # the staging parent (e.g. /srv/backup-staging) needs to exist and be owned
-  # by BACKUP_USER — the parent dir (/srv) is root:root 755.
+  # the staging parent (e.g. /var/backup-staging) needs to exist and be owned
+  # by BACKUP_USER — the parent dir (/var) is root:root 755.
   step "Installing staging dir ${BACKUP_STAGING_DIR}"
   if [[ -d "$BACKUP_STAGING_DIR" ]]; then
-    chmod 700 "$BACKUP_STAGING_DIR"
-    chown "${BACKUP_USER}:${BACKUP_USER}" "$BACKUP_STAGING_DIR"
+    sudo chmod 700 "$BACKUP_STAGING_DIR"
+    sudo chown "${BACKUP_USER}:${BACKUP_USER}" "$BACKUP_STAGING_DIR"
     success "Staging dir ready: ${BACKUP_STAGING_DIR} (dumps live in ${BACKUP_STAGING_DIR}/dumps)"
   else
-    install -d -m 700 -o "$BACKUP_USER" -g "$BACKUP_USER" "$BACKUP_STAGING_DIR"
+    sudo install -d -m 700 -o "$BACKUP_USER" -g "$BACKUP_USER" "$BACKUP_STAGING_DIR"
     success "Created ${BACKUP_STAGING_DIR} (owner: ${BACKUP_USER}, mode 700)"
   fi
 }
@@ -495,287 +564,47 @@ render_excludes_block() {
 
 write_wrapper() {
   step "Generating wrapper ${WRAPPER_BIN}"
-  local excludes_block
-  excludes_block="$(render_excludes_block)"
+  GENERATED_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+  EXCLUDES_BLOCK="$(render_excludes_block)"
 
-  cat > "$WRAPPER_BIN" <<WRAPPER
-#!/usr/bin/env bash
-# borg-backup-${BACKUP_CLIENT_NAME} — generated by setup-backup-client.sh on $(date '+%Y-%m-%d %H:%M:%S').
-# Re-run setup-backup-client.sh to regenerate; do not edit by hand.
-#
-# Repo: ${REPO_URI}
-# Stale lock recovery: 'borg break-lock <repo>' is DANGEROUS while a backup
-# may still run — only do it after confirming no run is in flight.
-
-set -euo pipefail
-
-CLIENT="${BACKUP_CLIENT_NAME}"
-REPO_URI="${REPO_URI}"
-PASSPHRASE_FILE="${PASS_FILE}"
-BORG_RSH='${BORG_RSH}'
-
-BACKUP_PATHS_RAW='${BACKUP_PATHS}'
-read -r -a BACKUP_PATHS <<< "\${BACKUP_PATHS_RAW}"
-
-BACKUP_SERVICES='${BACKUP_SERVICES}'
-BACKUP_STOP_SERVICES='${BACKUP_STOP_SERVICES}'
-BACKUP_STAGING_DIR='${BACKUP_STAGING_DIR}'
-REPO_MOUNT_SOURCE='${REPO_MOUNT_SOURCE}'
-KEEP_DAILY=${BACKUP_KEEP_DAILY}
-KEEP_WEEKLY=${BACKUP_KEEP_WEEKLY}
-KEEP_MONTHLY=${BACKUP_KEEP_MONTHLY}
-COMPRESSION=${BACKUP_COMPRESSION}
-ONE_FILE_SYSTEM=${BACKUP_ONE_FILE_SYSTEM}
-
-EXCLUDES=(${excludes_block})
-
-LIB="/usr/local/lib/borg-backup/docker-backup.sh"
-
-# apt borg 1.x reads BORG_PASSPHRASE (the *_FILE variants are borg 2.x only),
-# so the stored file is read into the env at run time — never printed, never
-# logged (journal does not expose process environment).
-if [[ ! -f "\${PASSPHRASE_FILE}" ]]; then
-  echo "ERROR: passphrase file missing: \${PASSPHRASE_FILE}" >&2
-  exit 1
-fi
-BORG_PASSPHRASE="\$(cat "\${PASSPHRASE_FILE}")"
-export BORG_PASSPHRASE
-if [[ -n "\${BORG_RSH}" ]]; then
-  export BORG_RSH
-fi
-# shellcheck disable=SC1090,SC1091
-source "\${LIB}"
-
-QUIESCED=()
-
-_quiesce_resume_all() {
-  local svc
-  for svc in "\${QUIESCED[@]}"; do
-    bk_stack_resume "\$svc" || bk_warn "failed to resume \${svc} — start it manually"
-  done
-  QUIESCED=()
-}
-trap '_quiesce_resume_all' EXIT
-
-usage() {
-  cat <<'USAGE'
-borg-backup-${BACKUP_CLIENT_NAME} <command> [args]
-
-Commands:
-  create                             Dump configured services, then 'borg create' + 'borg prune'
-  list                               List the 20 newest snapshots
-  check [--full]                     Repository integrity check (--full: read all data)
-  restore <snapshot> [--dest DIR] [paths...]
-                                     Extract a snapshot to DIR (default ./restore-${BACKUP_CLIENT_NAME}-<ts>);
-                                     paths as stored in the archive (leading / is stripped)
-  restore-db <snapshot> <service> --yes
-                                     DESTRUCTIVE: restore one service's database from its dump
-
-Environment:
-  BORG_PASSPHRASE is read from the passphrase file by this wrapper; everything
-  else is baked in.
-USAGE
-}
-
-create() {
-  local ts svc re
-  ts="\$(date '+%Y-%m-%dT%H:%M:%S')"
-
-  # Local-mode mount guard: if the backup drive is not mounted at the repo
-  # path anymore (e.g. after a reboot without fstab entry), refuse to write
-  # borg chunks into the root filesystem.
-  if [[ -n "\${REPO_MOUNT_SOURCE}" ]]; then
-    local current_source
-    current_source="\$(findmnt -n -o SOURCE --target "\${REPO_URI}" 2>/dev/null || true)"
-    if [[ "\$current_source" != "\${REPO_MOUNT_SOURCE}" ]]; then
-      echo "ERROR: backup drive does not appear mounted at the repo path — refusing to write backups into the root filesystem; re-run setup-backup-client.sh after fixing the mount" >&2
-      exit 2
-    fi
-  fi
-
-  if [[ -n "\${BACKUP_STOP_SERVICES}" ]]; then
-    for svc in \${BACKUP_STOP_SERVICES//,/ }; do
-      bk_stack_quiesce "\$svc" || { _quiesce_resume_all; exit 2; }
-      QUIESCED+=("\$svc")
-    done
-  fi
-
-  if [[ -n "\${BACKUP_SERVICES}" ]]; then
-    bk_staging_init "\${BACKUP_STAGING_DIR}" || { _quiesce_resume_all; exit 2; }
-    bk_staging_clean "\${BACKUP_STAGING_DIR}" || { _quiesce_resume_all; exit 2; }
-    for svc in \${BACKUP_SERVICES//,/ }; do
-      if ! bk_dump_service "\$svc" "\${BACKUP_STAGING_DIR}"; then
-        bk_error "dump of \${svc} failed — aborting before 'borg create'; partial dumps kept at \${BACKUP_STAGING_DIR}/dumps for debugging" || true
-        _quiesce_resume_all
-        exit 2
-      fi
-    done
-  fi
-
-  local -a args=(--stats --compression "\${COMPRESSION}")
-  if [[ "\${ONE_FILE_SYSTEM}" == true ]]; then
-    args+=(--one-file-system)
-  fi
-  args+=(--exclude-caches)
-  for re in "\${EXCLUDES[@]}"; do
-    args+=(--exclude "\$re")
-  done
-
-  local -a sources=("\${BACKUP_PATHS[@]}")
-  if [[ -n "\${BACKUP_SERVICES}" ]]; then
-    sources+=("\${BACKUP_STAGING_DIR}")
-  fi
-
-  bk_info "borg create \${REPO_URI}::\${CLIENT}-\${ts} (sources: \${sources[*]})"
-  # borg exit 1 = warnings (unreadable/changed files — normal when a regular
-  # user backs up /etc): the archive is complete, retention must still run.
-  # Exit >= 2 (lock, ENOSPC, I/O, remote) is fatal.
-  local create_rc=0
-  # shellcheck disable=SC2140  # borg's "repo::archive" syntax
-  borg create "\${args[@]}" "\${REPO_URI}"::"\${CLIENT}-\${ts}" "\${sources[@]}" || create_rc=\$?
-  if (( create_rc >= 2 )); then
-    bk_error "borg create failed (rc=\${create_rc})"
-    exit "\${create_rc}"
-  fi
-  if (( create_rc == 1 )); then
-    bk_warn "borg create finished WITH WARNINGS (unreadable/changed files) — archive is usable; see above"
-  fi
-
-  bk_info "borg prune (keep daily=\${KEEP_DAILY} weekly=\${KEEP_WEEKLY} monthly=\${KEEP_MONTHLY})"
-  borg prune --glob-archives "\${CLIENT}-*" \\
-    --keep-daily "\${KEEP_DAILY}" --keep-weekly "\${KEEP_WEEKLY}" --keep-monthly "\${KEEP_MONTHLY}" \\
-    "\${REPO_URI}"
-
-  if [[ -n "\${BACKUP_SERVICES}" ]]; then
-    bk_staging_clean "\${BACKUP_STAGING_DIR}" || bk_warn "staging cleanup failed — remove \${BACKUP_STAGING_DIR}/dumps manually"
-  fi
-  bk_info "create finished: \${CLIENT}-\${ts}"
-}
-
-list() {
-  borg list --short "\${REPO_URI}" | tail -n 20
-}
-
-check() {
-  local -a extra=()
-  # --verify-data: apt borg 1.x name for a full data check (borg 2.x: --read-data)
-  if [[ "\${1:-}" == "--full" ]]; then
-    extra=(--verify-data)
-  fi
-  borg check "\${extra[@]}" "\${REPO_URI}"
-}
-
-restore() {
-  local snap="\${1:?snapshot required}"; shift
-  local dest
-  dest="./restore-\${CLIENT}-\$(date '+%Y-%m-%dT%H%M%S')"
-  local -a paths=()
-  while [[ \$# -gt 0 ]]; do
-    case "\$1" in
-      --dest) dest="\${2:?--dest needs a value}"; shift 2 ;;
-      *) paths+=("\${1#/}"); shift ;;
-    esac
-  done
-  mkdir -p "\$dest"
-  bk_info "restoring \${REPO_URI}::\${snap} -> \${dest}"
-  # borg 1.x has no --destination: it extracts into the CWD (absolute paths
-  # stored in the archive are re-created under it). A fresh dest dir keeps
-  # restores out-of-place by construction.
-  ( cd "\$dest" && borg extract --progress "\${REPO_URI}"::"\${snap}" "\${paths[@]}" )
-  bk_info "restore complete: \$dest"
-}
-
-restore_db() {
-  local snap="\${1:?snapshot required}" svc="\${2:?service required}" confirmed="no"
-  if [[ "\${3:-}" == "--yes" ]]; then
-    confirmed="yes"
-  fi
-  if [[ "\$confirmed" != "yes" ]]; then
-    bk_error "restore-db is DESTRUCTIVE (drops and re-creates \${svc}'s database). Re-run with --yes." || true
-    return 1
-  fi
-  local tmp latest
-  tmp="\$(mktemp -d)"
-  bk_info "extracting \${BACKUP_STAGING_DIR}/dumps for \${svc} from \${snap}"
-  if ! ( cd "\${tmp}" && borg extract --progress "\${REPO_URI}"::"\${snap}" "\${BACKUP_STAGING_DIR#/}/dumps" ); then
-    bk_error "extraction failed — does snapshot \${snap} contain dumps? (BACKUP_SERVICES was probably empty when it was created)" || true
-    rm -rf "\${tmp}"
-    return 1
-  fi
-
-  shopt -s nullglob
-  local -a files=("\${tmp}\${BACKUP_STAGING_DIR}/dumps/\${svc}-"*)
-  shopt -u nullglob
-  if (( \${#files[@]} == 0 )); then
-    rm -rf "\$tmp"
-    bk_error "no \${svc} dump found in snapshot \${snap}" || true
-    return 1
-  fi
-  latest="\${files[-1]}"
-
-  if ! bk_restore_db "\$svc" "\${latest}"; then
-    bk_error "restore failed; dump kept at \${latest} for retry" || true
-    return 1
-  fi
-  rm -rf "\$tmp"
-  bk_info "database restore complete for \${svc}"
-}
-
-case "\${1:-help}" in
-  create)     shift; create "\$@" ;;
-  list)       shift; list ;;
-  check)      shift; check "\$@" ;;
-  restore)    shift; restore "\$@" ;;
-  restore-db) shift; restore_db "\$@" ;;
-  help|--help|-h) usage ;;
-  *) echo "Unknown command: \$1" >&2; usage >&2; exit 1 ;;
-esac
-WRAPPER
-  chmod 0755 "$WRAPPER_BIN"
+  # Render-time vars are substituted into the template; the wrapper's runtime
+  # bash vars (CLIENT, ts, …) are absent from the list and stay literal.
+  # shellcheck disable=SC2086  # a list of variable names, not expansions
+  export BACKUP_CLIENT_NAME GENERATED_DATE REPO_URI PASS_FILE BORG_RSH \
+    BACKUP_PATHS BACKUP_SERVICES BACKUP_STOP_SERVICES BACKUP_STAGING_DIR \
+    REPO_MOUNT_SOURCE BACKUP_KEEP_DAILY BACKUP_KEEP_WEEKLY BACKUP_KEEP_MONTHLY \
+    BACKUP_COMPRESSION BACKUP_ONE_FILE_SYSTEM EXCLUDES_BLOCK
+  local tmp
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  envsubst '${BACKUP_CLIENT_NAME} ${GENERATED_DATE} ${REPO_URI} ${PASS_FILE} ${BORG_RSH} ${BACKUP_PATHS} ${BACKUP_SERVICES} ${BACKUP_STOP_SERVICES} ${BACKUP_STAGING_DIR} ${REPO_MOUNT_SOURCE} ${BACKUP_KEEP_DAILY} ${BACKUP_KEEP_WEEKLY} ${BACKUP_KEEP_MONTHLY} ${BACKUP_COMPRESSION} ${BACKUP_ONE_FILE_SYSTEM} ${EXCLUDES_BLOCK}' \
+    < "${TEMPLATE_DIR}/borg-backup-wrapper.sh" > "$tmp"
+  sudo install -m 0755 "$tmp" "$WRAPPER_BIN"
+  rm -f "$tmp"
   success "Wrapper installed: ${WRAPPER_BIN}"
 }
 
 write_units() {
   step "Installing systemd units"
 
-  cat > "/etc/systemd/system/${SERVICE_UNIT}" <<UNIT
-[Unit]
-Description=Borg backup for ${BACKUP_CLIENT_NAME}
-After=network-online.target
-Wants=network-online.target
+  # shellcheck disable=SC2086  # a list of variable names, not expansions
+  export BACKUP_CLIENT_NAME BACKUP_USER WRAPPER_BIN SERVICE_UNIT
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  envsubst '${BACKUP_CLIENT_NAME} ${BACKUP_USER} ${WRAPPER_BIN}' \
+    < "${TEMPLATE_DIR}/borg-backup.service" | sudo tee "/etc/systemd/system/${SERVICE_UNIT}" >/dev/null
+  # shellcheck disable=SC2016  # envsubst expects the literal variable list
+  envsubst '${BACKUP_CLIENT_NAME} ${SERVICE_UNIT}' \
+    < "${TEMPLATE_DIR}/borg-backup.timer" | sudo tee "/etc/systemd/system/${TIMER_UNIT}" >/dev/null
 
-[Service]
-Type=oneshot
-User=${BACKUP_USER}
-ExecStart=${WRAPPER_BIN} create
-Nice=10
-IOSchedulingClass=best-effort
-TimeoutStartSec=0
-UNIT
-
-  cat > "/etc/systemd/system/${TIMER_UNIT}" <<UNIT
-[Unit]
-Description=Daily borg backup for ${BACKUP_CLIENT_NAME}
-
-[Timer]
-OnCalendar=daily
-Persistent=true
-RandomizedDelaySec=15m
-Unit=${SERVICE_UNIT}
-
-[Install]
-WantedBy=timers.target
-UNIT
-
-  systemctl daemon-reload
+  sudo systemctl daemon-reload
   # enable is idempotent and required for persistence across reboots even
   # when the timer is already active (e.g. installed by a pre-[Install]
   # version of this script and left "static").
-  systemctl enable "${TIMER_UNIT}"
-  if systemctl is-active --quiet "${TIMER_UNIT}" 2>/dev/null; then
+  sudo systemctl enable "${TIMER_UNIT}"
+  if sudo systemctl is-active --quiet "${TIMER_UNIT}" 2>/dev/null; then
     success "Timer enabled (active, state preserved): ${TIMER_UNIT}"
   else
-    systemctl start "${TIMER_UNIT}"
+    sudo systemctl start "${TIMER_UNIT}"
     success "Timer enabled and started: ${TIMER_UNIT}"
   fi
 }
@@ -895,14 +724,15 @@ main() {
     return 0
   fi
 
-  # validate before the root check so argument errors surface without sudo
+  # Auto-detect the scope when the operator left it empty (before validate).
+  [[ -z "$BACKUP_PATHS" ]] && detect_backup_paths
+  [[ -z "$BACKUP_SERVICES" ]] && detect_backup_services
+
+  # validate so argument errors surface before any privileged work
   validate
 
-  if [[ "$(id -u)" -ne 0 ]]; then
-    error "Run as root: sudo ./tasks/setup-backup-client.sh"
-  fi
-
   ensure_borg
+  ensure_envsubst
 
   if [[ -n "$BACKUP_SERVER_HOST" ]]; then
     ssh_preflight

@@ -106,6 +106,21 @@ scripts:
       # forcing a re-create. Set MONITORING_FORCE=true to test re-create.
     args: []
 
+  # Zero-config self-backup: storage host (local-disk mode on the VM's root
+  # fs) + a local-mode client + an initial full backup. Fast and idempotent.
+  setup-backup-server:
+    enabled: false
+    description: Borg backup host + self-backup — ad-hoc via --scripts
+    env: {}
+    args: []
+
+  # Standalone client in local mode (no server host) with a small scope.
+  setup-backup-client:
+    enabled: false
+    description: Borg backup client (local repo) — ad-hoc via --scripts
+    env: {}
+    args: ["--paths", "/etc"]
+
   # Kept out of the default fast suite (heavy CUDA image pull). VMs are
   # GPU-less: the explicit --cpu arg exercises the CPU guard paths
   # deliberately (D9); auto-detect would pick cpu anyway. NOTE (D9): the CPU

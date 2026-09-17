@@ -1,0 +1,12 @@
+[Unit]
+Description=Borg backup for ${BACKUP_CLIENT_NAME}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=${BACKUP_USER}
+ExecStart=${WRAPPER_BIN} create
+Nice=10
+IOSchedulingClass=best-effort
+TimeoutStartSec=0
