@@ -297,3 +297,38 @@ scripts:
       # Max seconds to wait for the stack to become healthy (default: 180)
       WAIT_TIMEOUT: '180'
     args: []
+  # --- Backups (run setup-backup-server first, then clients) ---
+  setup-backup-server:
+    enabled: false
+    description: Turn this machine into the central Borg backup storage host
+    env:
+      # Mount point of the backup drive (must be mounted + fstab-persistent)
+      BACKUP_MOUNT: /media/backups
+      BACKUP_REPO_ROOT: /media/backups/automatic
+      BACKUP_MANUAL_DIR: /media/backups/manual
+      BACKUP_GROUP: backups
+      # BACKUP_USER: alice
+      BACKUP_MIN_FREE_GB: '100'
+    args: []
+  setup-backup-client:
+    enabled: false
+    description: Add this machine to the Borg fleet (repo, wrapper, timer)
+    env:
+      # BACKUP_CLIENT_NAME: mybox
+      # Remote mode: set host; local mode (self-backup): leave empty
+      # BACKUP_SERVER_HOST: backup.example.com
+      # BACKUP_SERVER_PORT: '22'
+      # BACKUP_SERVER_USER: alice
+      BACKUP_REPO_PATH: /media/backups/automatic
+      # REQUIRED — no silent default scope
+      BACKUP_PATHS: /etc /srv
+      # Docker services dumped consistently before 'borg create' (comma list)
+      # forgejo, planka, kestra, nextcloud, n8n, concourse, openwebui, omnigent
+      BACKUP_SERVICES: forgejo,planka,kestra
+      # BACKUP_STOP_SERVICES: nextcloud
+      BACKUP_STAGING_DIR: /srv/backup-staging
+      BACKUP_KEEP_DAILY: '7'
+      BACKUP_KEEP_WEEKLY: '4'
+      BACKUP_KEEP_MONTHLY: '12'
+    args:
+    # - --initial
