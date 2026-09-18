@@ -7,6 +7,8 @@
 # DESCRIPTION:
 #   Reads machine-config.yml to determine which setup scripts to run,
 #   with their configured environment variables and command-line arguments.
+#   All apply/status output is additionally logged to ./logs/ (see
+#   setup_logging, LOG_DIR).
 #
 # SUBCOMMANDS:
 #   apply    Run all enabled setup scripts
@@ -36,6 +38,11 @@ TASKS_DIR="${SCRIPT_DIR}/tasks"
 CONFIG_FILE="${DEFAULT_CONFIG_FILE}"
 LOG_PREFIX="[RUN-SETUP]"
 
+# Process log (see setup_logging): all output of apply/status is additionally
+# written to ${LOG_DIR:-<repo>/logs}/run-setup-<timestamp>-<pid>.log.
+LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs}"
+LOG_FILE=""
+
 # Prompt policy for all child tasks. Tasks default to INTERACTIVE=false (see
 # specification/project/conventions.md); the orchestrator makes the intent explicit
 # and strips stdin from children in non-interactive mode, so a stray 'read' fails
@@ -62,6 +69,30 @@ log_success() { printf '%b %b %s\n' "${LOG_PREFIX}" "${GREEN}[OK]${RESET}     " 
 log_warn()    { printf '%b %b %s\n' "${LOG_PREFIX}" "${YELLOW}[WARN]${RESET}  " "$*"; }
 log_error()   { printf '%b %b %s\n' "${LOG_PREFIX}" "${RED}[ERROR]${RESET}" "$*" >&2; }
 log_step()    { printf '\n%b %s\n'  "${BOLD}${LOG_PREFIX} ▶${RESET}" "$*"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# setup_logging
+#   Tees every further stdout/stderr byte (this script's output and all child
+#   task output) into LOG_FILE in addition to the terminal. The terminal keeps
+#   its colours; the log file gets plain text (the sed branch strips ANSI
+#   escapes). If the log directory cannot be created the run continues
+#   without a log file — logging must never break a setup run.
+# ─────────────────────────────────────────────────────────────────────────────
+
+setup_logging() {
+  if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    log_warn "Could not create log directory: ${LOG_DIR} — continuing without a log file"
+    return 0
+  fi
+
+  LOG_FILE="${LOG_DIR}/run-setup-$(date +%Y%m%d-%H%M%S)-$$.log"
+
+  # tee's own stdout is the terminal as it was before the exec (colours
+  # intact); the nested sed branch writes the ANSI-stripped stream to the log.
+  exec > >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >>"$LOG_FILE")) 2>&1
+
+  log_info "Log file: ${LOG_FILE}"
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependency Checks
@@ -598,6 +629,15 @@ cmd_help() {
     prompts per question is not something the docker tasks can express today.
     --interactive is the only opt-in to prompts.
 
+  Logging:
+    apply and status tee all output (this script's messages and every child
+    task's stdout/stderr) into a plain-text log file
+    <repo>/logs/run-setup-<YYYYmmdd-HHMMSS>-<pid>.log in addition to the
+    terminal. The terminal keeps its colours; the log file is ANSI-stripped.
+    Override the directory with the LOG_DIR environment variable. If the log
+    directory cannot be created the run continues without a log file.
+    help/usage output is not logged.
+
   Dependencies:
     status is read-only: it never installs anything and exits with a hint if
     yq/jq are missing. apply auto-installs missing yq/jq by running
@@ -692,9 +732,11 @@ main() {
 
   case "$subcommand" in
     apply)
+      setup_logging
       cmd_apply
       ;;
     status)
+      setup_logging
       cmd_status
       ;;
     help)
