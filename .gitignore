@@ -11,6 +11,7 @@ __pycache__/
 .ralph/
 .tickets/
 tests/reports/
+logs/
 machine-config.yml
 models.yml
 models.yml.full
