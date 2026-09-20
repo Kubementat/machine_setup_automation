@@ -186,6 +186,3 @@ curl -s "$BASE/v1/audio/voices"   # verify all voices are back
 
 - `tasks/setup-omnivoice.sh` — install/upgrade the service (env vars `OMNIVOICE_*`, health gate, `--check`)
 - `AUTOMATIONS.md` → `setup-omnivoice.sh` — public setup summary
-- `docs/research/research-omnicvoice-tts-19-09-2026.md` — upstream endpoint reference
-- `docs/research/research-omnivoice-tts-service-setup-20-09-2026.md` — source-verified service details and gotchas
-- `docs/plans/omnivoice-tts-setup.md` — deployment decisions (incl. why voice persistence is not automated)
