@@ -123,6 +123,17 @@ Deploys **vLLM-Omni** — the official vLLM sub-project for omni-modality servin
 - Optional Traefik reverse-proxy integration
 - Idempotent; supports `--force` and `--check`
 
+#### `setup-omnivoice.sh`
+Builds the OmniVoice.cpp `tts-server` (an OpenAI-compatible text-to-speech HTTP server) from source for the detected GPU backend (Vulkan / CUDA / CPU) and runs it as a native systemd service under a dedicated non-root user. There is no official Docker image, so the single self-contained binary is built from source and installed to `/usr/local/bin`. Models come from the non-gated `Serveurperso/OmniVoice-GGUF` repo (no HF token needed). Defaults to a loopback bind (the server has no TLS/auth); a non-loopback bind adds a UFW rule. A bounded `GET /health` gate proves the stack is up before reporting success.
+
+**Features:**
+- Auto-detects the GPU backend (Vulkan / CUDA / CPU) and builds with the matching `buildvulkan.sh` / `buildcuda.sh` / `buildcpu.sh`
+- OpenAI-compatible TTS API: `POST /v1/audio/speech`, `POST`/`GET`/`DELETE /v1/audio/voices`, `GET /v1/models`, `GET /health`
+- Non-root `omnivoice` service user with GPU (`render`/`video`) group membership for Vulkan
+- Models under `/srv/omnivoice/models`, build source kept under `/srv/omnivoice/src` for rebuilds
+- Converging re-runs: models never re-downloaded, build skipped unless the binary/ref/backend changed, service restarted only when the rendered unit changed
+- `--check`, `--force`, `--interactive`; key env vars: `OMNIVOICE_BACKEND`, `OMNIVOICE_PORT`, `OMNIVOICE_HOST`, `OMNIVOICE_BASE_MODEL`, `OMNIVOICE_TOKENIZER_MODEL`, `OMNIVOICE_REF`
+
 #### `setup-omnigent.sh`
 Deploys Omnigent — an open-source meta-harness providing a common orchestration layer over multiple AI coding agents (Claude Code, Codex, Cursor, Pi, etc.) — via Docker Compose with Postgres + FastAPI. Also installs the runner CLI (`omnigent`) on the host for local agent execution.
 

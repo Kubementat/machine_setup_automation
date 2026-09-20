@@ -257,7 +257,7 @@ When recommending services, group them logically:
 | **CI/CD** | setup-concourse |
 | **Backup** | setup-backup-server, setup-backup-client |
 | **Remote Access** | setup-anydesk, setup-virtualization |
-| **Speech** | setup-whispering |
+| **Speech** | setup-whispering, setup-omnivoice |
 | **Browser** | setup-brave |
 | **Whiteboarding** | setup-excalidraw |
 

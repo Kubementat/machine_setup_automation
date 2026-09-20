@@ -142,3 +142,14 @@ scripts:
     env:
       VLLM_PORT: "8000"
     args: ["--cpu"]
+
+  # Kept out of the default fast suite (source build + ~1.3 GB model download).
+  # CPU backend for the GPU-less default VM; a GPU VM is needed for the vulkan
+  # build + /dev/dri group access. Ad hoc via --scripts (see tests/README.md).
+  setup-omnivoice:
+    enabled: false
+    description: OmniVoice.cpp TTS server (systemd) — ad-hoc via --scripts
+    env:
+      OMNIVOICE_BACKEND: cpu
+      OMNIVOICE_PORT: "8977"
+    args: []

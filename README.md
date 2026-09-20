@@ -53,6 +53,8 @@ Read and execute the instructions in skills/machine-setup-automation-assistant/S
 
 The agent will read the README and discover available scripts on its own, then guide you interactively through choosing, configuring, and running the right setup for your machine.
 
+To *use* the OmniVoice TTS API (speech synthesis, voice registration) instead of setting up services, point your agent at `skills/omnivoice-tts/SKILL.md`.
+
 ---
 
 ## Quick Start

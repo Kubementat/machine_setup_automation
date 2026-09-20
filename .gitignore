@@ -17,3 +17,4 @@ models.yml
 models.yml.full
 .pi-subagents/
 .omo/
+.agent-work/

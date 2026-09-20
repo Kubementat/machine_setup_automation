@@ -1,0 +1,26 @@
+[Unit]
+Description=OmniVoice TTS server (OpenAI-compatible)
+Documentation=https://github.com/ServeurpersoCom/omnivoice.cpp
+After=network.target
+
+[Service]
+Type=simple
+User=${OMNIVOICE_USER}
+SupplementaryGroups=render video
+WorkingDirectory=${OMNIVOICE_HOME}
+ExecStart=/usr/local/bin/omnivoice-tts-server \
+  --model ${OMNIVOICE_HOME}/models/${OMNIVOICE_BASE_MODEL} \
+  --codec ${OMNIVOICE_HOME}/models/${OMNIVOICE_TOKENIZER_MODEL} \
+  --host ${OMNIVOICE_HOST} \
+  --port ${OMNIVOICE_PORT}${OMNIVOICE_LANG_ARG}${OMNIVOICE_EXTRA_FLAGS}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=omnivoice
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

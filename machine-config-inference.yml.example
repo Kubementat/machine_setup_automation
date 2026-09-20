@@ -182,6 +182,18 @@ scripts:
       - --force
       # - --nvidia
 
+  setup-omnivoice:
+    enabled: false
+    description: Deploy OmniVoice.cpp TTS as a systemd service
+    env:
+      OMNIVOICE_HOME: /srv/omnivoice
+      OMNIVOICE_PORT: '8977'
+      OMNIVOICE_HOST: 127.0.0.1
+      # OMNIVOICE_BACKEND: auto        # auto | vulkan | cuda | cpu
+      # OMNIVOICE_BASE_MODEL: omnivoice-base-Q8_0.gguf
+      # OMNIVOICE_TOKENIZER_MODEL: omnivoice-tokenizer-F32.gguf
+    args: []
+
   setup-monitoring:
     enabled: true
     description: Deploy monitoring stack (Prometheus + Grafana + Node Exporter + cAdvisor) via Docker Compose
