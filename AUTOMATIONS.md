@@ -261,7 +261,16 @@ Deploys **Kestra** (event-driven workflow & orchestration platform) in standalon
 ### Storage & File Sharing
 
 #### `setup-nextcloud.sh`
-Deploys NextCloud cloud storage platform via Docker Compose with MariaDB backend. Provides file syncing, sharing, and collaboration features.
+Deploys Nextcloud, a self-hosted file sync and collaboration platform, via Docker Compose. Supports optional Traefik reverse-proxy integration for secure HTTPS access.
+
+**Features:**
+- Production stack: `nextcloud:34-apache` + PostgreSQL + authenticated Redis + cron sidecar
+- Redis provides distributed caching and transactional file locking (mandatory for production)
+- Traefik mode (HTTPS, HTTP→HTTPS redirect, `.well-known` DAV redirect, HSTS) or LAN/direct mode with UFW rule
+- Secrets in `/srv/nextcloud/.env` (mode 600), generated once and never rotated; the compose file keeps only literal `${VAR}` tokens
+- PostgreSQL-only backend; existing MariaDB/SQLite installs are refused up-front
+- Pinned images — update Nextcloud deliberately, one major at a time (33 → 34 → 35)
+- Backup integration: `setup-backup-server.sh --services nextcloud` (`pg_dump -Fc` + data copy)
 
 #### `setup-n8n.sh`
 Deploys n8n, a workflow automation platform, via Docker Compose with PostgreSQL backend. Supports optional Traefik reverse-proxy integration for secure HTTPS access.

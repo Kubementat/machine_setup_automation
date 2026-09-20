@@ -106,6 +106,16 @@ scripts:
       # forcing a re-create. Set MONITORING_FORCE=true to test re-create.
     args: []
 
+  setup-nextcloud:
+    enabled: false
+    description: Nextcloud + Postgres + Redis (docker) — ad-hoc via --scripts
+    env:
+      # LAN mode: the NAT VM has no DNS for the ACME resolver, so the
+      # --scripts run exercises the direct/ufw path, not Traefik
+      # routing.
+      NEXTCLOUD_TRAEFIK: "false"
+    args: []
+
   # Zero-config self-backup: storage host (local-disk mode on the VM's root
   # fs) + a local-mode client + an initial full backup. Fast and idempotent.
   setup-backup-server:

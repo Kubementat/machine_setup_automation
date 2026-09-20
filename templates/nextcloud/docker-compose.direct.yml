@@ -1,0 +1,119 @@
+# Nextcloud Docker Compose Configuration — direct (LAN) mode
+# Generated: ${GENERATED_DATE}
+# Secrets (POSTGRES_*, NEXTCLOUD_ADMIN_*, REDIS_HOST_PASSWORD, SMTP_*) are
+# kept as literal ${VAR} tokens in this file and resolved at runtime from
+# ${NEXTCLOUD_HOME}/.env (mode 600) via 'docker compose --env-file'.
+#
+# No OVERWRITEPROTOCOL here: plain-HTTP LAN access must stay plain HTTP —
+# forcing https breaks it (see docs/research/nextcloud-production-setup).
+---
+networks:
+  nextcloud:
+    external: false
+
+services:
+  db:
+    image: ${NEXTCLOUD_DB_IMAGE}
+    container_name: ${CONTAINER_NAME}-db
+    restart: always
+    volumes:
+      - ${NEXTCLOUD_HOME}/db:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    networks:
+      - nextcloud
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: ${NEXTCLOUD_REDIS_IMAGE}
+    container_name: ${CONTAINER_NAME}-redis
+    restart: always
+    # Compose resolves ${REDIS_HOST_PASSWORD} from the project .env at up
+    # time; the network publishes no ports, so the password is
+    # defence-in-depth for transactional file locking.
+    command: ["redis-server", "--requirepass", "${REDIS_HOST_PASSWORD}"]
+    environment:
+      # $$ -> literal $ inside the container (Compose escape), so the
+      # healthcheck authenticates against the requirepass above.
+      - REDIS_PASSWORD=${REDIS_HOST_PASSWORD}
+    networks:
+      - nextcloud
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    image: ${NEXTCLOUD_IMAGE}
+    container_name: ${CONTAINER_NAME}
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      # Empty ${NEXTCLOUD_LAN_BIND} = publish on all interfaces; set it to
+      # the LAN IP to keep the published port off other interfaces
+      # (published ports bypass UFW INPUT rules — see the script summary).
+      - "${NEXTCLOUD_LAN_BIND}:${HTTP_PORT}:80"
+    environment:
+      # Admin account — applied by the image at FIRST install only
+      - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
+      - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+      - NEXTCLOUD_DATA_DIR=/var/www/html/data
+      - NEXTCLOUD_INIT_HTACCESS=true
+      - NEXTCLOUD_TRUSTED_DOMAINS=${NEXTCLOUD_TRUSTED_DOMAINS}
+      # PostgreSQL connection (password resolved from the project .env)
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # Redis: distributed cache + transactional file locking
+      - REDIS_HOST=redis
+      - REDIS_HOST_PORT=6379
+      - REDIS_HOST_PASSWORD=${REDIS_HOST_PASSWORD}
+      # Upload chain: unlimited apache body limit, PHP limit from the script
+      - PHP_MEMORY_LIMIT=${NEXTCLOUD_PHP_MEMORY_LIMIT}
+      - PHP_UPLOAD_LIMIT=${NEXTCLOUD_UPLOAD_LIMIT}
+      - APACHE_BODY_LIMIT=0
+      # SMTP — optional passthrough, empty values apply nothing
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_SECURE=${SMTP_SECURE}
+      - SMTP_AUTHTYPE=${SMTP_AUTHTYPE}
+      - SMTP_NAME=${SMTP_NAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS}
+      - MAIL_DOMAIN=${MAIL_DOMAIN}
+    networks:
+      - nextcloud
+    volumes:
+      - ${NEXTCLOUD_HOME}/html:/var/www/html
+      - ${NEXTCLOUD_HOME}/data:/var/www/html/data
+      - /etc/localtime:/etc/localtime:ro
+
+  cron:
+    image: ${NEXTCLOUD_IMAGE}
+    container_name: ${CONTAINER_NAME}-cron
+    restart: always
+    # Built-in loop: 'php -f cron.php' every 5 min as www-data (preferred
+    # background-job mode; maintenance_window_start is only honoured here).
+    entrypoint: /cron.sh
+    depends_on:
+      - app
+    networks:
+      - nextcloud
+    volumes:
+      - ${NEXTCLOUD_HOME}/html:/var/www/html
+      - ${NEXTCLOUD_HOME}/data:/var/www/html/data
+      - /etc/localtime:/etc/localtime:ro
