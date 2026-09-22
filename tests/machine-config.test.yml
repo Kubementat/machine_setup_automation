@@ -34,6 +34,12 @@ scripts:
     env: {}
     args: []
 
+  setup-agent-sandbox:
+    enabled: true
+    description: bwrap sandbox prerequisites + asb wrapper
+    env: {}
+    args: []
+
   configure-firewall:
     enabled: true
     description: UFW rules (SSH kept on port 22 for harness access)

@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# =============================================================================
+# asb — run a coding agent inside a bubblewrap (bwrap) sandbox
+# =============================================================================
+#
+# Runs a coding agent (pi, opencode) or a bare shell (sh) inside a bwrap
+# sandbox in which the workspace is the ONLY general writable path:
+#
+#   - system dirs read-only: /usr /lib /lib64 /bin /sbin
+#   - /etc per-file only (resolv.conf, hosts, passwd, group, ssl) — the
+#     rest of /etc (shadow, sudoers, ...) is invisible
+#   - agent state read-only: ~/.pi, ~/.config/opencode,
+#     ~/.local/share/opencode, ~/.local/bin (missing dirs are skipped)
+#   - herdr socket bind-mounted rw (if present) + ALL HERDR_* env vars
+#     forwarded, so the agent's herdr state extension keeps working; asb
+#     exports HERDR_AGENT=<agent> on the host side so herdr maps the
+#     foreground bwrap process to the right agent manifest
+#   - env is cleared; only HOME, PATH, TERM, LANG/LC_*, HERDR_* and
+#     user-supplied --env vars are passed in
+#   - namespaces: --unshare-uts --unshare-ipc (deliberately NO
+#     --unshare-pid / --new-session in v1, so herdr foreground detection
+#     and Ctrl-C keep working), --die-with-parent for the lifecycle
+#
+# NOT isolated in v1: the network (agents must reach the LLM API; an egress
+# allowlist proxy is a planned follow-up).
+#
+# Usage:
+#   asb <agent> [workspace] [args...]
+#
+#   agents:    pi | opencode | sh
+#   workspace: optional ABSOLUTE path — the only writable dir (default: $PWD)
+#
+# Options:
+#   --env KEY=VALUE   extra env var passed into the sandbox (repeatable)
+#   --debug-argv      print the bwrap command line and exit (does not exec)
+#   -h, --help        show this help
+#
+# Examples:
+#   asb pi                          # sandboxed pi in the current dir
+#   asb pi /srv/projects/myrepo     # sandboxed pi in a given workspace
+#   asb pi -p "say hi"              # one-shot (batch) run
+#   asb opencode /path/to/repo
+#   asb sh -c 'ls'                  # bare sandboxed shell (diagnostics)
+# =============================================================================
+
+set -euo pipefail
+
+PROG="asb"
+err() { echo "${PROG}: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+asb — run a coding agent inside a bubblewrap (bwrap) sandbox
+
+Usage:
+  asb <agent> [workspace] [args...]
+
+Agents:
+  pi          sandboxed Pi coding agent
+  opencode    sandboxed Opencode agent
+  sh          bare sandboxed shell (diagnostics)
+
+Arguments:
+  workspace   optional ABSOLUTE path, the only writable dir (default: $PWD)
+  args        passed through to the agent
+
+Options:
+  --env KEY=VALUE   extra env var passed into the sandbox (repeatable)
+  --debug-argv      print the bwrap command line and exit (does not exec)
+  -h, --help        show this help
+
+Guarantees (v1):
+  - workspace is the only general writable path (/tmp is a private tmpfs)
+  - /usr /lib /lib64 /bin /sbin are read-only; /etc is per-file
+    (resolv.conf, hosts, passwd, group, ssl) — shadow/sudoers are invisible
+  - agent state is read-only: ~/.pi, ~/.config/opencode,
+    ~/.local/share/opencode, ~/.local/bin (missing dirs are skipped)
+  - env is cleared; only HOME, PATH, TERM, LANG/LC_*, HERDR_* and
+    --env vars are forwarded
+  - herdr socket is bind-mounted rw (if present) and HERDR_* vars are
+    forwarded; HERDR_AGENT=<agent> is exported on the host side
+  - namespaces: --unshare-uts --unshare-ipc, --die-with-parent
+    (no --unshare-pid / --new-session in v1: keeps herdr foreground
+    detection and Ctrl-C working)
+
+Limits (v1):
+  - no network isolation (agents must reach the LLM API; an egress
+    allowlist proxy is a planned follow-up)
+  - agent state dirs are read-only (no session persistence in-sandbox)
+  - the mounted herdr socket grants the agent the same herdr access a
+    same-uid unsandboxed agent already has
+
+Examples:
+  asb pi
+  asb pi /srv/projects/myrepo
+  asb pi -p "say hi"
+  asb opencode /path/to/repo
+  asb sh -c 'ls'
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Parse arguments: first positional is the agent, then options and pass-through
+# ---------------------------------------------------------------------------
+
+if [[ $# -lt 1 ]]; then
+  usage >&2
+  exit 2
+fi
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+AGENT="$1"
+shift
+case "$AGENT" in
+  pi | opencode | sh) ;;
+  *) err "unknown agent: '${AGENT}' (supported: pi, opencode, sh)" ;;
+esac
+
+REST=("$@")
+WORKSPACE=""
+ENV_OVERRIDES=()
+AGENT_ARGS=()
+DEBUG_ARGV=0
+
+i=0
+while (( i < ${#REST[@]} )); do
+  arg="${REST[i]}"
+  case "$arg" in
+    --env)
+      if (( i + 1 >= ${#REST[@]} )); then
+        err "--env requires a KEY=VALUE argument"
+      fi
+      ENV_OVERRIDES+=("${REST[i+1]}")
+      i=$((i + 2))
+      continue
+      ;;
+    --debug-argv)
+      DEBUG_ARGV=1
+      i=$((i + 1))
+      continue
+      ;;
+  esac
+  # First absolute existing-dir argument (before any pass-through arg)
+  # is the workspace.
+  if [[ -z "$WORKSPACE" && ${#AGENT_ARGS[@]} -eq 0 && "$arg" == /* && -d "$arg" ]]; then
+    WORKSPACE="$arg"
+    i=$((i + 1))
+    continue
+  fi
+  AGENT_ARGS+=("$arg")
+  i=$((i + 1))
+done
+
+# ---------------------------------------------------------------------------
+# Workspace (the only general writable path)
+# ---------------------------------------------------------------------------
+
+if [[ -z "$WORKSPACE" ]]; then
+  WORKSPACE="$PWD"
+fi
+[[ -d "$WORKSPACE" ]] || err "workspace is not a directory: ${WORKSPACE}"
+if [[ "$WORKSPACE" == "$HOME" || "$HOME" == "$WORKSPACE"/* ]]; then
+  err "refusing workspace '${WORKSPACE}': it is (or contains) \$HOME, which would make agent state writable"
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the agent binary and make its runtime visible in the sandbox
+# ---------------------------------------------------------------------------
+
+RO_EXTRA_DIRS=()
+
+# add_ro_dir DIR — remember a directory to ro-bind, unless it is already
+# covered by the static system mounts (/usr /bin /sbin /lib /lib64).
+add_ro_dir() {
+  local d x
+  d="$(realpath -- "$1" 2>/dev/null)" || return 0
+  case "$d" in
+    /usr | /usr/* | /bin | /bin/* | /sbin | /sbin/* | /lib | /lib/* | /lib64 | /lib64/*)
+      return 0
+      ;;
+  esac
+  for x in "${RO_EXTRA_DIRS[@]}"; do
+    [[ "$x" == "$d" ]] && return 0
+  done
+  RO_EXTRA_DIRS+=("$d")
+}
+
+if [[ "$AGENT" == "sh" ]]; then
+  AGENT_BIN="$(command -v sh)" || err "no 'sh' found on PATH"
+else
+  AGENT_BIN="$(command -v "$AGENT" 2>/dev/null)" || {
+    echo "${PROG}: agent '${AGENT}' not found on PATH — install it first (e.g. ./tasks/setup-pi.sh or ./tasks/setup-opencode.sh)" >&2
+    exit 1
+  }
+fi
+
+add_ro_dir "$(dirname -- "$AGENT_BIN")"
+
+AGENT_REAL="$(readlink -f -- "$AGENT_BIN")"
+[[ -f "$AGENT_REAL" ]] || err "cannot resolve agent binary: ${AGENT_BIN}"
+add_ro_dir "$(dirname -- "$AGENT_REAL")"
+
+# npm-installed agents are env-node scripts: mount the node runtime as well.
+magic="$(head -c 2 -- "$AGENT_REAL" 2>/dev/null || true)"
+if [[ "$magic" == "#!" ]]; then
+  first_line="$(head -n 1 -- "$AGENT_REAL" 2>/dev/null || true)"
+  if [[ "$first_line" == *" node" ]]; then
+    NODE_BIN="$(command -v node 2>/dev/null)" || err "agent '${AGENT}' requires node, but no 'node' found on PATH"
+    add_ro_dir "$(dirname -- "$NODE_BIN")"
+    NODE_REAL="$(readlink -f -- "$NODE_BIN")"
+    add_ro_dir "$(dirname -- "$NODE_REAL")"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Environment allowlist (never inherit the host env — it carries tokens)
+# ---------------------------------------------------------------------------
+
+# Print the env entries allowed into the sandbox, NUL-separated:
+# HOME, PATH, TERM, LANG, LC_*, HERDR_* (incl. the HERDR_AGENT export).
+sandbox_env_kv() {
+  local kv name
+  while IFS= read -r -d '' kv; do
+    name="${kv%%=*}"
+    case "$name" in
+      HOME | PATH | TERM | LANG | LC_* | HERDR_*) printf '%s\0' "$kv" ;;
+    esac
+  done < <(env -0)
+}
+
+# ---------------------------------------------------------------------------
+# Build the bwrap argv
+# ---------------------------------------------------------------------------
+
+HERDR_SOCK="${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}"
+
+BWRAP_ARGV=(
+  bwrap
+  --ro-bind /usr /usr
+  --ro-bind /lib /lib
+  --ro-bind /lib64 /lib64
+  --ro-bind /bin /bin
+  --ro-bind /sbin /sbin
+  --ro-bind-try /etc/resolv.conf /etc/resolv.conf
+  --ro-bind /etc/hosts /etc/hosts
+  --ro-bind /etc/passwd /etc/passwd
+  --ro-bind /etc/group /etc/group
+  --ro-bind-try /etc/ssl /etc/ssl
+  --proc /proc
+  --dev /dev
+  --tmpfs /tmp
+  --ro-bind-try "$HOME/.pi" "$HOME/.pi"
+  --ro-bind-try "$HOME/.config/opencode" "$HOME/.config/opencode"
+  --ro-bind-try "$HOME/.local/share/opencode" "$HOME/.local/share/opencode"
+  --ro-bind-try "$HOME/.local/bin" "$HOME/.local/bin"
+)
+
+for d in "${RO_EXTRA_DIRS[@]}"; do
+  BWRAP_ARGV+=(--ro-bind "$d" "$d")
+done
+
+# herdr socket (rw) — skip cleanly when herdr is not installed/running
+BWRAP_ARGV+=(--bind-try "$HERDR_SOCK" "$HERDR_SOCK")
+
+# workspace: the only general writable path
+BWRAP_ARGV+=(--bind "$WORKSPACE" "$WORKSPACE")
+
+# namespaces & lifecycle (v1: no --unshare-pid, no --new-session)
+BWRAP_ARGV+=(--unshare-uts --unshare-ipc --die-with-parent --clearenv)
+
+while IFS= read -r -d '' kv; do
+  BWRAP_ARGV+=(--setenv "${kv%%=*}" "${kv#*=}")
+done < <(sandbox_env_kv)
+
+for e in "${ENV_OVERRIDES[@]}"; do
+  [[ "$e" == *=* && -n "${e%%=*}" ]] || err "--env requires KEY=VALUE (got: '${e}')"
+  BWRAP_ARGV+=(--setenv "${e%%=*}" "${e#*=}")
+done
+
+BWRAP_ARGV+=(-- "$AGENT_BIN" "${AGENT_ARGS[@]}")
+
+if (( DEBUG_ARGV )); then
+  for a in "${BWRAP_ARGV[@]}"; do
+    printf '%q ' "$a"
+  done
+  printf '\n'
+  exit 0
+fi
+
+# Host-side herdr hint: maps the foreground bwrap process to the agent's
+# screen manifest (herdr "VMs and sandbox wrappers" pattern).
+export HERDR_AGENT="$AGENT"
+
+exec "${BWRAP_ARGV[@]}"
