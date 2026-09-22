@@ -12,6 +12,19 @@ Installs common system packages (curl, git, python3, etc.), **uv** Python packag
 #### `setup-docker.sh`
 Installs Docker Engine from the official Docker repository, adds the current user to the `docker` group and verifies the installation.
 
+#### `setup-nvidia-container.sh`
+Makes an existing GPU usable from containers via **CDI** (Container Device Interface). Installs the NVIDIA Container Toolkit when missing, generates `/etc/cdi/nvidia.yaml`, and installs an apt hook that regenerates the spec after a driver upgrade. Prerequisite for every GPU task (`setup-colqwen.sh`, `setup-vllm.sh`, `setup-vllm-omni.sh`). Does **not** install the GPU driver itself.
+
+**Why CDI and not `deploy.resources.reservations.devices`:**
+- The legacy path injects `/dev/nvidia*` from an OCI prestart hook, *after* runc created the container's systemd scope, so systemd never learns about those device nodes
+- A later `systemctl daemon-reload` (snapd triggers one every few hours) then rebuilds the scope's cgroup device filter and silently revokes GPU access from the **running** container — CUDA fails while the container keeps answering `/health` with 200
+- CDI injects the devices into the OCI spec *before* container creation, so a reload re-applies them
+
+**Why the apt hook:**
+- A CDI spec pins version-suffixed driver libraries (`libcuda.so.580.142`); a driver upgrade renames them and containers fail to start with `unresolvable CDI devices nvidia.com/gpu=all`
+- The hook regenerates the spec in the same apt transaction that replaced the driver
+- Manual equivalent: `sudo nvidia-cdi-refresh` (`--check` reports staleness without writing, `--force` regenerates unconditionally)
+
 #### `setup-traefik.sh`
 Deploys production-ready Traefik v3 reverse proxy with Docker Compose, TLS via Let's Encrypt, security headers, rate limiting, and optional protected dashboard.
 

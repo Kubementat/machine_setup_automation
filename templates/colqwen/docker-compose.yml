@@ -31,10 +31,23 @@ services:
       - "${COLQWEN_MODEL_DIR}:${COLQWEN_MODEL_DIR}:ro"
     ports:
       - "${COLQWEN_PORT}:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU via CDI — deliberately NOT `deploy.resources.reservations.devices`.
+    # The legacy path injects /dev/nvidia* from an OCI prestart hook, i.e.
+    # AFTER runc has created the container's systemd scope, so systemd never
+    # learns about those nodes. Any later `systemctl daemon-reload` (snapd
+    # triggers one every few hours) rewrites the scope's cgroup-v2 eBPF device
+    # filter from its own DeviceAllow list and silently revokes GPU access
+    # from the RUNNING container: open("/dev/nvidiactl") starts returning
+    # EPERM, the first cuBLAS GEMM fails with CUBLAS_STATUS_INTERNAL_ERROR,
+    # and the CUDA context stays poisoned for the life of the process. The
+    # container keeps serving /health with 200 the whole time.
+    # CDI injects the devices into the OCI spec BEFORE the container is
+    # created, so runc records them in the scope's DeviceAllow and a reload
+    # re-applies them instead of dropping them.
+    #
+    # Requires a CDI spec on the host. setup-nvidia-container.sh generates it
+    # and installs an apt hook that regenerates it after a driver upgrade — a
+    # spec pins versioned library paths (libcuda.so.580.142) that an upgrade
+    # renames, and stale mounts make the container fail to start.
+    devices:
+      - "nvidia.com/gpu=all"

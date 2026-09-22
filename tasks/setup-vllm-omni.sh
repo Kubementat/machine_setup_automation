@@ -413,6 +413,23 @@ echo -e "\n${BOLD}Selected backend:${RESET} ${GREEN}${BACKEND^^}${RESET}  |  arc
 
 [[ "$BACKEND" == "cpu" ]] && warn "CPU backend: generative/diffusion Omni models are impractical on CPU (very slow)."
 
+# The NVIDIA compose templates request the GPU as the CDI device
+# nvidia.com/gpu=all, so the spec must exist before `compose up` — a missing
+# one fails the container start with "unresolvable CDI devices". Checked here
+# rather than in the generic pre-flight because it applies to the NVIDIA
+# backend only, and the backend is only definitive after detection.
+if [[ "$BACKEND" == "nvidia" ]]; then
+  if ! command -v nvidia-ctk &>/dev/null; then
+    error "nvidia-ctk is not installed. Required for the CDI GPU spec. Run setup-nvidia-container.sh first."
+  fi
+  if ! nvidia-ctk cdi list 2>/dev/null | grep -q "nvidia.com/gpu=all"; then
+    error "No CDI spec for nvidia.com/gpu=all. Run setup-nvidia-container.sh — it generates the
+  spec and installs an apt hook that regenerates it after every driver upgrade.
+  Manual equivalent: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+  fi
+  success "CDI device nvidia.com/gpu=all is available."
+fi
+
 # ── Resolve Docker image ───────────────────────────────────────────────────────
 IMAGE_SUFFIX=""
 [[ "$ARCH" == "aarch64" ]] && IMAGE_SUFFIX="-aarch64"

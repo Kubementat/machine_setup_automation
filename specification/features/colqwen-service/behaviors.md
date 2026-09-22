@@ -57,7 +57,11 @@ Key characteristics:
 - **`colpali-engine==${COLPALI_VERSION}`** is installed via build arg (not pinned in `requirements.txt`), so a version switch only requires an `.env` edit plus `docker compose build`. `requirements.txt` holds the static dependencies only.
 - **Model volume:** `${COLQWEN_MODEL_DIR}` is mounted read-only at the **identical absolute path** inside the container. Rationale: adapter models carry an absolute `base_model_name_or_path` in their `adapter_config.json` (pointing into the host's HF cache); with an identical-path mount these paths resolve inside the container without modifying `adapter_config.json` (which is out of scope). `HF_HOME` points at the mount so HF model IDs resolve offline from the cache.
 - **Offline enforcement:** the container sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. No weights are downloaded at build or runtime.
-- **GPU:** the compose file reserves NVIDIA GPUs (`driver: nvidia`, `count: all`); `restart: unless-stopped`.
+- **GPU:** the compose file requests the CDI device `nvidia.com/gpu=all` via `devices:` — deliberately *not*
+  `deploy.resources.reservations.devices`, whose prestart-hook injection is undone by a later
+  `systemctl daemon-reload` on the running container. Requires a CDI spec on the host
+  (`setup-nvidia-container.sh`); the pre-flight fails when `nvidia.com/gpu=all` is not listed.
+  `restart: unless-stopped`.
 - Template placeholders must keep the templates lintable (hadolint for the Dockerfile, yamllint for the compose file).
 
 ---

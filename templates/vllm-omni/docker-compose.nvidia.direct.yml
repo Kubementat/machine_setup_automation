@@ -22,13 +22,15 @@ services:
     ipc: "host"
     ports:
       - "${VLLM_OMNI_PORT}:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU via CDI — deliberately NOT deploy.resources.reservations.devices.
+    # The legacy path injects /dev/nvidia* from an OCI prestart hook, after
+    # runc created the container's systemd scope, so a later
+    # `systemctl daemon-reload` rebuilds the scope's device filter and revokes
+    # GPU access from the RUNNING container (CUDA fails, /health stays 200).
+    # CDI puts the devices in the OCI spec before creation, so a reload
+    # re-applies them. Spec upkeep: tasks/setup-nvidia-container.sh.
+    devices:
+      - "nvidia.com/gpu=all"
     networks:
       - vllm-omni
     command: >

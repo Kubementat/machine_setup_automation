@@ -25,6 +25,9 @@ This guide explains how to use vLLM after running the setup script. vLLM runs as
 
 - **Docker** with Docker Compose v2+
 - **NVIDIA drivers** (for GPU acceleration) or **ROCm** (for AMD GPUs)
+- **NVIDIA CDI spec** (NVIDIA backend only) — run `tasks/setup-nvidia-container.sh`.
+  The generated compose file requests the GPU as the CDI device `nvidia.com/gpu=all`;
+  without a spec the pre-flight fails.
 
 ### Verify Docker
 
@@ -37,6 +40,7 @@ docker compose version
 
 ```bash
 nvidia-smi
+nvidia-ctk cdi list | grep nvidia.com/gpu=all
 ```
 
 ### Verify GPU (AMD)
