@@ -4,15 +4,20 @@
 # asb — run a coding agent inside a bubblewrap (bwrap) sandbox
 # =============================================================================
 #
-# Runs a coding agent (pi, opencode) or a bare shell (sh) inside a bwrap
+# Runs a coding agent (pi, opencode, claude, codex) or a bare shell (sh)
+# inside a bwrap
 # sandbox in which the workspace is the ONLY general writable path:
 #
 #   - system dirs read-only: /usr /lib /lib64 /bin /sbin
 #   - /etc per-file only (resolv.conf, hosts, passwd, group, ssl) — the
 #     rest of /etc (shadow, sudoers, ...) is invisible
 #   - agent state: ~/.local/bin, ~/.config/opencode read-only;
-#     ~/.pi and ~/.local/share/opencode rw (agents write sessions,
-#     logs, and their db there — ro breaks them); missing dirs skipped
+#     ~/.pi, ~/.local/share/opencode rw (agents write sessions,
+#     logs, and their db there — ro breaks them);
+#     claude: ~/.local/share/claude ro (native binary), ~/.claude and
+#     ~/.claude.json rw (transcripts, credentials, settings);
+#     codex: ~/.codex rw (config.toml, auth.json, sessions, logs — and
+#     the binary itself for standalone installs); missing dirs skipped
 #   - herdr socket bind-mounted rw (if present) + ALL HERDR_* env vars
 #     forwarded, so the agent's herdr state extension keeps working; asb
 #     exports HERDR_AGENT=<agent> on the host side so herdr maps the
@@ -29,7 +34,7 @@
 # Usage:
 #   asb <agent> [workspace] [args...]
 #
-#   agents:    pi | opencode | sh
+#   agents:    pi | opencode | claude | codex | sh
 #   workspace: optional ABSOLUTE path — the only writable dir (default: $PWD)
 #
 # Options:
@@ -44,6 +49,9 @@
 #    pass an explicit absolute workspace to bind a real dir instead)
 #   asb pi -p "say hi"              # one-shot (batch) run
 #   asb opencode /path/to/repo
+#   asb claude /path/to/repo
+#   asb claude --env ANTHROPIC_API_KEY=...   # API-key auth into the sandbox
+#   asb codex /path/to/repo
 #   asb sh -c 'ls'                  # bare sandboxed shell (diagnostics)
 # =============================================================================
 
@@ -62,6 +70,8 @@ Usage:
 Agents:
   pi          sandboxed Pi coding agent
   opencode    sandboxed Opencode agent
+  claude      sandboxed Claude Code agent
+  codex       sandboxed OpenAI Codex CLI agent
   sh          bare sandboxed shell (diagnostics)
 
 Arguments:
@@ -79,9 +89,10 @@ Guarantees (v1):
     private /tmp instead of binding $HOME)
   - /usr /lib /lib64 /bin /sbin are read-only; /etc is per-file
     (resolv.conf, hosts, passwd, group, ssl) — shadow/sudoers are invisible
-  - agent state: ~/.local/bin, ~/.config/opencode read-only; ~/.pi and
-    ~/.local/share/opencode rw (agents write sessions/logs/db there);
-    missing dirs are skipped
+  - agent state: ~/.local/bin, ~/.config/opencode read-only; ~/.pi,
+    ~/.local/share/opencode, ~/.claude and ~/.claude.json (claude) and
+    ~/.codex (codex, incl. its standalone binary) rw — agents write
+    sessions/logs/credentials there; missing dirs are skipped
   - env is cleared; only HOME, PATH, TERM, LANG/LC_*, HERDR_* and
     --env vars are forwarded
   - herdr socket is bind-mounted rw (if present) and HERDR_* vars are
@@ -104,6 +115,11 @@ Examples:
   asb pi /srv/projects/myrepo
   asb pi -p "say hi"
   asb opencode /path/to/repo
+  asb claude /path/to/repo
+  asb claude --env ANTHROPIC_API_KEY=... # API-key auth (subscription/OAuth
+                                        # creds in ~/.claude/.credentials.json
+                                        # are already carried by the rw mount)
+  asb codex /path/to/repo
   asb sh -c 'ls'
 EOF
 }
@@ -125,8 +141,8 @@ fi
 AGENT="$1"
 shift
 case "$AGENT" in
-  pi | opencode | sh) ;;
-  *) err "unknown agent: '${AGENT}' (supported: pi, opencode, sh)" ;;
+  pi | opencode | claude | codex | sh) ;;
+  *) err "unknown agent: '${AGENT}' (supported: pi, opencode, claude, codex, sh)" ;;
 esac
 
 REST=("$@")
@@ -212,7 +228,7 @@ if [[ "$AGENT" == "sh" ]]; then
   AGENT_BIN="$(command -v sh)" || err "no 'sh' found on PATH"
 else
   AGENT_BIN="$(command -v "$AGENT" 2>/dev/null)" || {
-    echo "${PROG}: agent '${AGENT}' not found on PATH — install it first (e.g. ./tasks/setup-pi.sh or ./tasks/setup-opencode.sh)" >&2
+    echo "${PROG}: agent '${AGENT}' not found on PATH — install it first (e.g. ./tasks/setup-pi.sh, ./tasks/setup-opencode.sh, 'claude install', or the codex standalone installer)" >&2
     exit 1
   }
 fi
@@ -239,8 +255,9 @@ done
 add_ro_dir "$js_root"
 
 # npm-installed agents are env-node scripts: mount the node runtime as well.
-magic="$(head -c 2 -- "$AGENT_REAL" 2>/dev/null || true)"
-if [[ "$magic" == "#!" ]]; then
+# (od-encoding keeps binary nulls out of command substitution)
+magic_hex="$(head -c 2 -- "$AGENT_REAL" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+if [[ "$magic_hex" == "2321" ]]; then
   first_line="$(head -n 1 -- "$AGENT_REAL" 2>/dev/null || true)"
   if [[ "$first_line" == *" node" ]]; then
     NODE_BIN="$(command -v node 2>/dev/null)" || err "agent '${AGENT}' requires node, but no 'node' found on PATH"
@@ -292,6 +309,20 @@ BWRAP_ARGV=(
   --ro-bind-try "$HOME/.config/opencode" "$HOME/.config/opencode"
   # opencode writes its log + sqlite db under its share dir → rw
   --bind-try "$HOME/.local/share/opencode" "$HOME/.local/share/opencode"
+  # claude: native installer keeps the real binary under
+  # ~/.local/share/claude/versions (the ~/.local/bin/claude launcher is a
+  # symlink into it) → ro
+  --ro-bind-try "$HOME/.local/share/claude" "$HOME/.local/share/claude"
+  # claude writes transcripts (~/.claude/projects), history, settings and
+  # its Linux credentials (~/.claude/.credentials.json) at runtime → rw;
+  # a few global config keys live in ~/.claude.json → rw
+  --bind-try "$HOME/.claude" "$HOME/.claude"
+  --bind-try "$HOME/.claude.json" "$HOME/.claude.json"
+  # codex: CODEX_HOME default ~/.codex holds config.toml, auth.json,
+  # history.jsonl, sessions, logs — and for standalone installs the
+  # binary itself (packages/standalone/current/codex) → rw (a per-agent
+  # RO_EXTRA_DIRS ro-bind of the exact binary dir layers on top)
+  --bind-try "$HOME/.codex" "$HOME/.codex"
   --ro-bind-try "$HOME/.local/bin" "$HOME/.local/bin"
 )
 
