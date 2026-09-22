@@ -107,7 +107,7 @@ TEMPLATE_DIR="$(realpath "${SCRIPT_DIR}/../templates/agent-sandbox")"
 
 # Temp files to clean up on exit
 TMP_FILES=()
-cleanup() { rm -f "${TMP_FILES[@]}" 2>/dev/null || true; }
+cleanup() { rm -rf "${TMP_FILES[@]:-}" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # =============================================================================
@@ -221,12 +221,24 @@ step "Verifying asb (smoke test)"
 /usr/local/bin/asb --help >/dev/null || error "asb --help failed"
 info "asb --help OK"
 
-# At least one real sandboxed process executed via asb, exit 0
+# Real sandboxed processes executed via asb (exit 0 + expected output),
+# covering both the default workspace and an explicit workspace bind.
+asb_scratch="$(mktemp -d)"
+TMP_FILES+=("$asb_scratch")
+
 if asb_out="$(timeout 30 /usr/local/bin/asb sh -c 'echo sandboxed-asb OK' 2>&1)" \
     && grep -q "sandboxed-asb OK" <<< "$asb_out"; then
-  success "asb smoke test passed"
+  success "asb smoke test passed (default workspace)"
 else
-  err_msg "asb smoke test failed: ${asb_out}"
+  err_msg "asb smoke test failed (default workspace): ${asb_out}"
+  exit 1
+fi
+
+if asb_out="$(timeout 30 /usr/local/bin/asb sh "$asb_scratch" -c 'echo sandboxed-asb OK' 2>&1)" \
+    && grep -q "sandboxed-asb OK" <<< "$asb_out"; then
+  success "asb smoke test passed (explicit workspace)"
+else
+  err_msg "asb smoke test failed (explicit workspace): ${asb_out}"
   exit 1
 fi
 

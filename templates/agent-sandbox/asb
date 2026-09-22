@@ -39,6 +39,8 @@
 # Examples:
 #   asb pi                          # sandboxed pi in the current dir
 #   asb pi /srv/projects/myrepo     # sandboxed pi in a given workspace
+#   (from ~: asb pi uses the private sandbox /tmp as scratch area —
+#    pass an explicit absolute workspace to bind a real dir instead)
 #   asb pi -p "say hi"              # one-shot (batch) run
 #   asb opencode /path/to/repo
 #   asb sh -c 'ls'                  # bare sandboxed shell (diagnostics)
@@ -71,7 +73,9 @@ Options:
   -h, --help        show this help
 
 Guarantees (v1):
-  - workspace is the only general writable path (/tmp is a private tmpfs)
+  - workspace is the only general writable path (/tmp is a private
+    tmpfs; when the default workspace would be $HOME, asb uses the
+    private /tmp instead of binding $HOME)
   - /usr /lib /lib64 /bin /sbin are read-only; /etc is per-file
     (resolv.conf, hosts, passwd, group, ssl) — shadow/sudoers are invisible
   - agent state is read-only: ~/.pi, ~/.config/opencode,
@@ -123,6 +127,7 @@ esac
 
 REST=("$@")
 WORKSPACE=""
+WORKSPACE_EXPLICIT=0
 ENV_OVERRIDES=()
 AGENT_ARGS=()
 DEBUG_ARGV=0
@@ -149,6 +154,7 @@ while (( i < ${#REST[@]} )); do
   # is the workspace.
   if [[ -z "$WORKSPACE" && ${#AGENT_ARGS[@]} -eq 0 && "$arg" == /* && -d "$arg" ]]; then
     WORKSPACE="$arg"
+    WORKSPACE_EXPLICIT=1
     i=$((i + 1))
     continue
   fi
@@ -165,7 +171,15 @@ if [[ -z "$WORKSPACE" ]]; then
 fi
 [[ -d "$WORKSPACE" ]] || err "workspace is not a directory: ${WORKSPACE}"
 if [[ "$WORKSPACE" == "$HOME" || "$HOME" == "$WORKSPACE"/* ]]; then
-  err "refusing workspace '${WORKSPACE}': it is (or contains) \$HOME, which would make agent state writable"
+  if [[ "$WORKSPACE_EXPLICIT" -eq 1 ]]; then
+    err "refusing workspace '${WORKSPACE}': it is (or contains) \$HOME, which would make agent state writable"
+  else
+    # Defaulted to a home dir: fall back to the private /tmp tmpfs so the
+    # sandbox still has a writable scratch area without exposing $HOME.
+    echo "asb: default workspace is \$HOME — using the private sandbox /tmp instead (pass an explicit workspace to bind a real dir)" >&2
+    WORKSPACE=""
+    BWRAP_FALLBACK_CHDIR=1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -267,8 +281,18 @@ done
 # herdr socket (rw) — skip cleanly when herdr is not installed/running
 BWRAP_ARGV+=(--bind-try "$HERDR_SOCK" "$HERDR_SOCK")
 
-# workspace: the only general writable path
-BWRAP_ARGV+=(--bind "$WORKSPACE" "$WORKSPACE")
+if [[ -n "$WORKSPACE" ]]; then
+  # workspace: the only general writable path; start inside it (or in the
+  # original cwd when that lives inside the workspace)
+  CHDIR_TARGET="$WORKSPACE"
+  if [[ "$PWD" == "$WORKSPACE" || "$PWD" == "$WORKSPACE"/* ]]; then
+    CHDIR_TARGET="$PWD"
+  fi
+  BWRAP_ARGV+=(--bind "$WORKSPACE" "$WORKSPACE" --chdir "$CHDIR_TARGET")
+elif [[ "${BWRAP_FALLBACK_CHDIR:-0}" -eq 1 ]]; then
+  # no writable bind (home-dir default): private /tmp is the scratch area
+  BWRAP_ARGV+=(--chdir /tmp)
+fi
 
 # namespaces & lifecycle (v1: no --unshare-pid, no --new-session)
 BWRAP_ARGV+=(--unshare-uts --unshare-ipc --die-with-parent --clearenv)
