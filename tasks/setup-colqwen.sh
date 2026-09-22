@@ -180,11 +180,12 @@ fi
 # without killing it. CDI puts the devices in the OCI spec up front, which
 # survives a reload. That means the CDI spec must exist before `compose up`.
 if ! command -v nvidia-ctk &>/dev/null; then
-  error "nvidia-ctk is not installed. Required for the CDI GPU spec. Run setup-docker.sh first."
+  error "nvidia-ctk is not installed. Required for the CDI GPU spec. Run setup-nvidia-container.sh first."
 fi
 if ! nvidia-ctk cdi list 2>/dev/null | grep -q "nvidia.com/gpu=all"; then
-  error "No CDI spec for nvidia.com/gpu=all. Generate it (re-run after every driver update):
-  sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+  error "No CDI spec for nvidia.com/gpu=all. Run setup-nvidia-container.sh — it generates the
+  spec and installs an apt hook that regenerates it after every driver upgrade.
+  Manual equivalent: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
 fi
 success "CDI spec for nvidia.com/gpu=all present."
 

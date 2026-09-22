@@ -45,7 +45,9 @@ services:
     # created, so runc records them in the scope's DeviceAllow and a reload
     # re-applies them instead of dropping them.
     #
-    # Requires a CDI spec on the host — regenerate after every driver update:
-    #   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+    # Requires a CDI spec on the host. setup-nvidia-container.sh generates it
+    # and installs an apt hook that regenerates it after a driver upgrade — a
+    # spec pins versioned library paths (libcuda.so.580.142) that an upgrade
+    # renames, and stale mounts make the container fail to start.
     devices:
       - "nvidia.com/gpu=all"

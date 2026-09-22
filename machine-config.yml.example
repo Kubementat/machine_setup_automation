@@ -12,6 +12,20 @@ scripts:
     description: Install Docker Engine and related components
     env: {}
     args: []
+  # --- GPU ordering ---
+  # setup-nvidia-container MUST run BEFORE any GPU task (setup-colqwen,
+  # setup-vllm, setup-vllm-omni): those request the GPU as the CDI device
+  # nvidia.com/gpu=all, and their pre-flight fails when no spec exists.
+  setup-nvidia-container:
+    enabled: false
+    description: NVIDIA Container Toolkit + CDI GPU spec
+               (prerequisite for all GPU tasks)
+    env:
+      # regenerate the CDI spec after a driver upgrade
+      NVIDIA_CDI_APT_HOOK: 'true'
+      NVIDIA_SMOKE_TEST: 'true'
+      # NVIDIA_CDI_SPEC: /etc/cdi/nvidia.yaml
+    args: []  # add --force to regenerate a spec that is already current
   # --- SSH / firewall ordering (lockout avoidance) ---
   # setup-sshd MUST run BEFORE configure-firewall: sshd moves to the new port
   # first, and the firewall then allows that port. Reversed, UFW goes to
