@@ -10,8 +10,9 @@
 #   - system dirs read-only: /usr /lib /lib64 /bin /sbin
 #   - /etc per-file only (resolv.conf, hosts, passwd, group, ssl) — the
 #     rest of /etc (shadow, sudoers, ...) is invisible
-#   - agent state read-only: ~/.pi, ~/.config/opencode,
-#     ~/.local/share/opencode, ~/.local/bin (missing dirs are skipped)
+#   - agent state: ~/.local/bin, ~/.config/opencode read-only;
+#     ~/.pi and ~/.local/share/opencode rw (agents write sessions,
+#     logs, and their db there — ro breaks them); missing dirs skipped
 #   - herdr socket bind-mounted rw (if present) + ALL HERDR_* env vars
 #     forwarded, so the agent's herdr state extension keeps working; asb
 #     exports HERDR_AGENT=<agent> on the host side so herdr maps the
@@ -78,8 +79,9 @@ Guarantees (v1):
     private /tmp instead of binding $HOME)
   - /usr /lib /lib64 /bin /sbin are read-only; /etc is per-file
     (resolv.conf, hosts, passwd, group, ssl) — shadow/sudoers are invisible
-  - agent state is read-only: ~/.pi, ~/.config/opencode,
-    ~/.local/share/opencode, ~/.local/bin (missing dirs are skipped)
+  - agent state: ~/.local/bin, ~/.config/opencode read-only; ~/.pi and
+    ~/.local/share/opencode rw (agents write sessions/logs/db there);
+    missing dirs are skipped
   - env is cleared; only HOME, PATH, TERM, LANG/LC_*, HERDR_* and
     --env vars are forwarded
   - herdr socket is bind-mounted rw (if present) and HERDR_* vars are
@@ -91,7 +93,9 @@ Guarantees (v1):
 Limits (v1):
   - no network isolation (agents must reach the LLM API; an egress
     allowlist proxy is a planned follow-up)
-  - agent state dirs are read-only (no session persistence in-sandbox)
+  - agent state dirs are writable in-sandbox, same as an unsandboxed
+    same-uid run (bounding deliberate state tampering is the
+    microVM tier's threat model, not this one)
   - the mounted herdr socket grants the agent the same herdr access a
     same-uid unsandboxed agent already has
 
@@ -217,7 +221,22 @@ add_ro_dir "$(dirname -- "$AGENT_BIN")"
 
 AGENT_REAL="$(readlink -f -- "$AGENT_BIN")"
 [[ -f "$AGENT_REAL" ]] || err "cannot resolve agent binary: ${AGENT_BIN}"
-add_ro_dir "$(dirname -- "$AGENT_REAL")"
+
+# JS packages: bind the package root (nearest ancestor dir holding a
+# package.json) so nested node_modules siblings resolve; fall back to
+# the file's own dir for non-package binaries.
+js_root="$(dirname -- "$AGENT_REAL")"
+probe="$js_root"
+for _ in 1 2 3 4 5 6; do
+  if [[ -f "$probe/package.json" ]]; then
+    js_root="$probe"
+    break
+  fi
+  parent="$(dirname -- "$probe")"
+  [[ "$parent" == "$probe" ]] && break
+  probe="$parent"
+done
+add_ro_dir "$js_root"
 
 # npm-installed agents are env-node scripts: mount the node runtime as well.
 magic="$(head -c 2 -- "$AGENT_REAL" 2>/dev/null || true)"
@@ -268,9 +287,11 @@ BWRAP_ARGV=(
   --proc /proc
   --dev /dev
   --tmpfs /tmp
-  --ro-bind-try "$HOME/.pi" "$HOME/.pi"
+  # pi writes session dirs under ~/.pi → rw (ro breaks session creation)
+  --bind-try "$HOME/.pi" "$HOME/.pi"
   --ro-bind-try "$HOME/.config/opencode" "$HOME/.config/opencode"
-  --ro-bind-try "$HOME/.local/share/opencode" "$HOME/.local/share/opencode"
+  # opencode writes its log + sqlite db under its share dir → rw
+  --bind-try "$HOME/.local/share/opencode" "$HOME/.local/share/opencode"
   --ro-bind-try "$HOME/.local/bin" "$HOME/.local/bin"
 )
 
