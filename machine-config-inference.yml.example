@@ -12,8 +12,9 @@
 #   6. setup-llama-swap.sh   — llama-swap (multi-model LLM proxy, systemd)
 #   7. setup-openwebui.sh    — Open WebUI (web interface for LLMs, Docker)
 #   8. setup-pi.sh           — Pi coding agent
-#   9. setup-vllm.sh         — vLLM (OpenAI-compatible inference server, Docker)
-#  10. setup-monitoring.sh   — Monitoring stack (Prometheus + Grafana + Node Exporter + cAdvisor, Docker)
+#   9. setup-agent-sandbox.sh — bwrap sandbox prerequisites + asb wrapper
+#  10. setup-vllm.sh         — vLLM (OpenAI-compatible inference server, Docker)
+#  11. setup-monitoring.sh   — Monitoring stack (Prometheus + Grafana + Node Exporter + cAdvisor, Docker)
 #
 # NOTE: The orchestrator (run-setup.sh) executes the enabled scripts in the
 # order they are listed in the .scripts mapping of this file.
@@ -114,6 +115,16 @@ scripts:
     description: Install Pi coding agent with extensions
     env:
       NVM_DIR: $HOME/.nvm
+    args: []
+
+  setup-agent-sandbox:
+    enabled: true
+    description: bwrap sandbox prerequisites + asb wrapper
+    env:
+      # apt packages, space/comma-separated (default: bubblewrap)
+      SANDBOX_APT_PACKAGES: bubblewrap
+      # Seconds allowed for the bwrap smoke test (default: 15)
+      BWRAP_VERIFY_TIMEOUT: '15'
     args: []
 
   sync-models:
