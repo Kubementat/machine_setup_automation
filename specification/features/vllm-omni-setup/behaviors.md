@@ -180,7 +180,10 @@ Re-running the script without `--force` never destroys the existing `.env` or mo
   - service `vllm-omni`: resolved image, `restart: unless-stopped`, `env_file: .env`,
     `HF_HOME=/root/.cache/huggingface`, HF cache volume mount, `shm_size`, and `ipc: "host"` for GPU backends.
   - **Direct mode:** publish `"${VLLM_OMNI_PORT}:8000"`.
-  - **NVIDIA:** `deploy.resources.reservations.devices` with `driver: nvidia`, `count: all`, `capabilities: [gpu]`.
+  - **NVIDIA:** the CDI device `devices: ["nvidia.com/gpu=all"]` — deliberately *not*
+    `deploy.resources.reservations.devices`, whose prestart-hook injection is undone by a later
+    `systemctl daemon-reload` on the running container. Requires a CDI spec on the host
+    (`setup-nvidia-container.sh`); the pre-flight fails when `nvidia.com/gpu=all` is not listed.
   - **AMD:** `/dev/kfd` + `/dev/dri` devices, `group_add: [video]`, `cap_add: [SYS_PTRACE]`,
     `security_opt: [seccomp=unconfined]`.
   - **Traefik mode:** router/service labels on port `8000` (`Host(${VLLM_OMNI_DOMAIN})`, `websecure`,

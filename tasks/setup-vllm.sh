@@ -619,11 +619,18 @@ if [[ "$BACKEND" == "nvidia" ]] || [[ -z "$BACKEND" ]]; then
         fi
       fi
     fi
-    # NVIDIA Container Toolkit must be available to the daemon for --gpus
-    if ! docker info --format '{{.Runtimes}}' 2>/dev/null | grep -qi nvidia; then
-      warn "No 'nvidia' runtime in docker info — NVIDIA Container Toolkit may not be installed."
-      warn "The vLLM image needs GPU passthrough: install it via setup-docker.sh or the NVIDIA docs."
+    # The rendered compose file requests the GPU as the CDI device
+    # nvidia.com/gpu=all, so the spec must exist before `compose up` — a
+    # missing one fails the container start with "unresolvable CDI devices".
+    if ! command -v nvidia-ctk &>/dev/null; then
+      error "nvidia-ctk is not installed. Required for the CDI GPU spec. Run setup-nvidia-container.sh first."
     fi
+    if ! nvidia-ctk cdi list 2>/dev/null | grep -q "nvidia.com/gpu=all"; then
+      error "No CDI spec for nvidia.com/gpu=all. Run setup-nvidia-container.sh — it generates the
+  spec and installs an apt hook that regenerates it after every driver upgrade.
+  Manual equivalent: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+    fi
+    success "CDI device nvidia.com/gpu=all is available."
     # Host CUDA toolkit — informational only (the container image ships CUDA)
     if command -v nvcc &>/dev/null; then
       CUDA_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -1 || true)
@@ -1042,7 +1049,13 @@ COMPOSE_TEMPLATE="${TEMPLATE_DIR}/docker-compose.yml.tmpl"
 case "$BACKEND" in
   nvidia)
     VLLM_IPC_BLOCK='    ipc: "host"'
-    VLLM_VENDOR_BLOCK=$'    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]'
+    # GPU via CDI, not deploy.resources.reservations.devices: the legacy path
+    # injects /dev/nvidia* from an OCI prestart hook, after runc created the
+    # container's systemd scope, so a later `systemctl daemon-reload` rebuilds
+    # the scope's device filter and revokes GPU access from the RUNNING
+    # container (CUDA fails, /health stays 200). CDI puts the devices in the
+    # OCI spec before creation. Spec upkeep: tasks/setup-nvidia-container.sh.
+    VLLM_VENDOR_BLOCK=$'    devices:\n      - "nvidia.com/gpu=all"'
     # NOTE: ${VLLM_GPU_UTIL} must survive this envsubst (it is non-recursive, F15) so that
     # compose still resolves the value from /srv/vllm/.env at runtime, exactly as the
     # per-backend templates did. Do NOT add VLLM_GPU_UTIL to the envsubst list.
