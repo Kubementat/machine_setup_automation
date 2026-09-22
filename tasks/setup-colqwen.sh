@@ -172,6 +172,22 @@ if ! command -v envsubst &>/dev/null; then
   error "envsubst is not installed. Required for template rendering. Install with: sudo apt-get install gettext-base"
 fi
 
+# The compose file requests the GPU as a CDI device ("nvidia.com/gpu=all")
+# rather than via deploy.resources.reservations.devices. The legacy path hands
+# the devices to the container from an OCI prestart hook, after runc has
+# created its systemd scope, so a later `systemctl daemon-reload` rewrites the
+# scope's device filter and revokes GPU access from the running container
+# without killing it. CDI puts the devices in the OCI spec up front, which
+# survives a reload. That means the CDI spec must exist before `compose up`.
+if ! command -v nvidia-ctk &>/dev/null; then
+  error "nvidia-ctk is not installed. Required for the CDI GPU spec. Run setup-docker.sh first."
+fi
+if ! nvidia-ctk cdi list 2>/dev/null | grep -q "nvidia.com/gpu=all"; then
+  error "No CDI spec for nvidia.com/gpu=all. Generate it (re-run after every driver update):
+  sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+fi
+success "CDI spec for nvidia.com/gpu=all present."
+
 # ── Existing installation / status ────────────────────────────────────────────
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 
