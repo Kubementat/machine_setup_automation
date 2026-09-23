@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # =============================================================================
-# run-setup.sh — Orchestrator for machine setup automation
+# run-setup.sh — Orchestrator for kwisatz machine setup
 # =============================================================================
 #
 # DESCRIPTION:
@@ -597,7 +597,7 @@ cmd_apply() {
 cmd_help() {
   cat <<'EOF'
 
-  Machine Setup Automation Runner
+  kwisatz Setup Automation Runner
 
   Usage:
     ./run-setup.sh [options] <subcommand>

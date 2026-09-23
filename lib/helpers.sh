@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # =============================================================================
-# lib/helpers.sh — Shared helper library for machine_setup_automation
+# lib/helpers.sh — Shared helper library for kwisatz
 # =============================================================================
 #
 # PURPOSE:
@@ -12,7 +12,7 @@
 #   Source this file at the top of any setup script:
 #     source "$(dirname "${BASH_SOURCE[0]}")/../lib/helpers.sh"
 #   or with an absolute path:
-#     source /path/to/machine_setup_automation/lib/helpers.sh
+#     source /path/to/kwisatz/lib/helpers.sh
 #
 # NOTES:
 #   - This file is designed to be *sourced*, not executed directly.
@@ -86,19 +86,19 @@ if ! declare -F run_preflight_checks > /dev/null 2>&1; then
       echo -e "${RED}[ERROR]${RESET} Docker is not installed. Please run setup-docker.sh first." >&2
       exit 1
     fi
-    
+
     # Check Docker daemon is running
     if ! docker info &>/dev/null; then
       echo -e "${RED}[ERROR]${RESET} Docker daemon is not running. Please start Docker." >&2
       exit 1
     fi
-    
+
     # Check OpenSSL is available
     if ! command -v openssl &>/dev/null; then
       echo -e "${RED}[ERROR]${RESET} OpenSSL is not installed. Required for password and key generation." >&2
       exit 1
     fi
-    
+
     # Check curl is available
     if ! command -v curl &>/dev/null; then
       echo -e "${RED}[ERROR]${RESET} curl is not installed. Required for health check polling." >&2

@@ -20,7 +20,7 @@ generation, any-to-any) on Ubuntu. It runs **in parallel** with the existing tex
 | `tasks/setup-vllm-omni.sh` | Core vLLM-Omni setup script (new) |
 | `machine-config.yml.example` | Add a `setup-vllm-omni` entry, `enabled: false` (edit) |
 | `README.md` | Document the script under "AI & LLM Services" (edit) |
-| `skills/machine-setup-automation-assistant/SKILL.md` | Add to the service-category table (edit) |
+| `skills/kwisatz-assistant/SKILL.md` | Add to the service-category table (edit) |
 | `CONTEXT.md` | Add a "vllm-omni" domain term (edit) |
 
 Generated at runtime on the target host (not committed): `/srv/vllm-omni/.env`, `/srv/vllm-omni/docker-compose.yml`.
@@ -246,7 +246,7 @@ max-model-len (when set), config path, and the API URL (`http://localhost:${VLLM
   commented example env vars (`VLLM_OMNI_PORT`, `VLLM_OMNI_MODEL`).
 - `README.md`: add a `setup-vllm-omni.sh` subsection under "AI & LLM Services" describing purpose, the prebuilt
   image, backends, the `--omni` serving model, and the env vars.
-- `skills/machine-setup-automation-assistant/SKILL.md`: add `setup-vllm-omni` to the **AI / LLM** row of the
+- `skills/kwisatz-assistant/SKILL.md`: add `setup-vllm-omni` to the **AI / LLM** row of the
   service-category table.
 - `CONTEXT.md`: add a "vllm-omni" entry under AI/ML domain terms.
 

@@ -1,14 +1,14 @@
-# LLM Dev/Server Setup Automation Scripts
+# kwisatz - Private AI Server Setup Automation made easy
 
 > **New Ubuntu machine (e.g Nvidia DGX Spark, AMD Strix Halo) → working local-LLM inference server. Two YAML files. One command.**
 
-A proper inference server is ten install projects wearing a trench coat — GPU toolchain, inference engine, model proxy, web UI, hardened SSH, firewall, monitoring. Done by hand, it's a whole weekend of plumbing before your first token gets generated.
+A proper inference server is ten install projects wearing a trench coat — GPU toolchain, inference engine, model proxy, web UI, hardened SSH, firewall, monitoring, backup automation and many more. Done by hand, it's a whole weekend of plumbing before your first token gets generated.
 
-**machine_setup_automation** is a repo of modular, idempotent Bash scripts plus one orchestrator that turns a fresh **Ubuntu** box into a machine that actually *serves* models — and it's replayable on every machine you buy next.
+**kwisatz** is a repo of modular, idempotent scripts plus one orchestrator that turns a fresh **Ubuntu** box into a machine that actually *serves* models — and it's replayable on every machine you buy next.
 
 ```bash
-git clone https://github.com/Kubementat/machine_setup_automation.git
-cd machine_setup_automation
+git clone https://github.com/Kubementat/kwisatz.git
+cd kwisatz
 cp machine-config-inference.yml.example machine-config.yml
 cp models.yml.example models.yml
 ./run-setup.sh apply
@@ -38,7 +38,9 @@ graph LR
 - **Your config is the runbook** — enable/disable services and set env vars & args in one YAML file
 - **Order guaranteed** — scripts run in the order you listed them; one failure doesn't stop the rest
 - **Agent-friendly** — ships an [Agent Skill](https://agentskills.io) so Claude Code, pi, or any compatible agent can set the machine up for you
-- **Not just inference** — 30+ services: Forgejo, Nextcloud, n8n, Neovim, monitoring, remote desktop, dev tools, and more
+- **Backup-solution** - ships with the repository (see [Backups](README.md#backups))
+- **Not just inference** — 30+ services: Forgejo, Nextcloud, n8n, Neovim, monitoring, remote desktop, Text-to-speech, dev tools, and more
+- Licensed under MIT License (see [MIT-LICENSE](./MIT-LICENSE))
 
 ---
 
@@ -48,7 +50,7 @@ This repository ships an [Agent Skills](https://agentskills.io)-compatible skill
 
 Point your agent at the skill file:
 ```
-Read and execute the instructions in skills/machine-setup-automation-assistant/SKILL.md
+Read and execute the instructions in ./skills/kwisatz-assistant/SKILL.md
 ```
 
 The agent will read the README and discover available scripts on its own, then guide you interactively through choosing, configuring, and running the right setup for your machine.
@@ -60,8 +62,8 @@ To *use* the OmniVoice TTS API (speech synthesis, voice registration) instead of
 ## Quick Start
 1. **Clone the repository** (or download a zip) and `cd` into it:
    ```bash
-   git clone https://github.com/Kubementat/machine_setup_automation.git
-   cd machine_setup_automation
+   git clone https://github.com/Kubementat/kwisatz.git
+   cd kwisatz
    ```
 2. **Make sure you have sudo rights** - all scripts call `sudo` where required.
 3. **Copy the example configurations** and edit it to enable the services and models you want:
@@ -376,9 +378,7 @@ There are two ways to customize the setup:
    # If not, log out/in or run: newgrp docker
    ```
 3. **Port conflicts** - If a port (e.g., `2224`) is already used, export a different value before running the scripts.
-4. **LM Studio AppImage does not launch** - Ensure the file at `$HOME/lmstudio_bin` has execute permission (`chmod +x`). The start script `$HOME/lmstudio` runs `./lmstudio_bin --no-sandbox`; you can add additional flags there.
-5. **UFW refuses to enable** - Check if another firewall manager (e.g., `firewalld`) is active; disable it or stick with UFW for this automation.
-6. **k3s installation fails** - The script uses the official get.k3s.io installer which requires a clean system without conflicting container runtimes. Remove any existing Docker/Kubernetes installations before re-running, or run k3s on a separate VM.
+4. **UFW refuses to enable** - Check if another firewall manager (e.g., `firewalld`) is active; disable it or stick with UFW for this automation.
 
 ---
 
@@ -386,15 +386,17 @@ There are two ways to customize the setup:
 - **[README_TRAEFIK.md](README_TRAEFIK.md)** - Complete guide for the Traefik v3 reverse proxy setup script (`setup-traefik.sh`)
 - **[README_MANAGING_MODELS.md](README_MANAGING_MODELS.md)** - Guide for managing models via huggingface cli
 - **[tests/README.md](tests/README.md)** - Test suite documentation and usage guide
+- As `kubementat` is a term leaning on Frank Herbert's Dune universe this project is also [referencing dune terminology](https://dune.fandom.com/wiki/Kwisatz_Haderach).
 ---
 
 ## Contributing
 Feel free to fork this repository and add new task scripts (e.g., for additional AI tools) or improve existing ones. When adding a script:
 - Place it under `tasks/` if it is part of the core provisioning flow, otherwise put it in an appropriate sub-folder.
+- Place templates for automation scripts in `templates/`.
 - Document any environment variables at the top of the file.
 - Update this README (or add a new section) describing the purpose and usage.
 
----
+## About the creators
 
-## License & Disclaimer
-This project is provided **as-is** without warranty. Use at your own risk, especially when opening ports or running services on publicly reachable machines.
+We are the [AI-Crack-Heads](https://www.ai-crack-heads.com) , an agency specialized in AI Consulting, project planning, execution and operations.
+If you need assistance with AI or DevOps projects [reach out to us](https://www.ai-crack-heads.com/en/contact).

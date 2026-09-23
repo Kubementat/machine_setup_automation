@@ -108,7 +108,7 @@ pattern:
 | `machine-config.yml.example` | Add `setup-backup-server:` and `setup-backup-client:` entries, both `enabled: false` |
 | `README.md` | Document both scripts under a new "Backups" section (evolution: server → clients) |
 | `CONTEXT.md` | Add "backup-server" / "backup-client" domain terms |
-| `skills/machine-setup-automation-assistant/SKILL.md` | Add both scripts to the service-category table |
+| `skills/kwisatz-assistant/SKILL.md` | Add both scripts to the service-category table |
 
 Generated at runtime on the target host (not committed):
 

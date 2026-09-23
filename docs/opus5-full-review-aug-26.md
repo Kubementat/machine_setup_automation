@@ -1,4 +1,4 @@
-# Full Code Review — machine_setup_automation
+# Full Code Review — kwisatz
 
 **Reviewer:** Claude Opus 5
 **Date:** 2026-08-02

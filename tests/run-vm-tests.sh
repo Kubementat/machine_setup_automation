@@ -247,7 +247,7 @@ log "VM ready: ${VM_NAME} at ${VM_IP}"
 # shellcheck disable=SC2016  # $HOME must expand on the VM
 REMOTE_HOME="$(remote_ssh 'echo "$HOME"')"
 [[ -n "$REMOTE_HOME" ]] || fail "cannot determine remote home directory"
-REMOTE_DIR="${REMOTE_HOME}/machine_setup_automation"
+REMOTE_DIR="${REMOTE_HOME}/kwisatz"
 log "Copying repository to ${VM_USER}@${VM_IP}:${REMOTE_DIR}"
 remote_ssh "mkdir -p '${REMOTE_DIR}'" || fail "cannot create remote dir"
 if ! scp "${SSH_OPTS[@]}" -r "${REPO_ROOT}/." "${VM_USER}@${VM_IP}:${REMOTE_DIR}/" \

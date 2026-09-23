@@ -1,10 +1,10 @@
 ---
-name: machine-setup-automation-assistant
-description: Assistant for the machine_setup_automation repository. Guides users through the YAML-configured orchestrator (run-setup.sh) to provision machines for LLM workflows. Helps select services, configure machine-config.yml, and run setups. Use when someone asks how to set up a machine, which service to install, or how to configure any task in this repo.
+name: kwisatz-assistant
+description: Assistant for the kwisatz repository. Guides users through the YAML-configured orchestrator (run-setup.sh) to provision machines for LLM workflows. Helps select services, configure machine-config.yml, and run setups. Use when someone asks how to set up a machine, which service to install, or how to configure any task in this repo.
 Invoke this skill when the users asks for usage instructions or repository introduction.
 ---
 
-# Machine Setup Automation Assistant
+# kwisatz - machine setup automation assistant
 
 On activation, orient yourself immediately:
 

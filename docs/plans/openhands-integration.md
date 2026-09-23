@@ -396,7 +396,7 @@ ufw_add_rule 8011:8012 tcp "OpenHands Worker Ports"
    - `machine-config.yml.example` — add a `setup-openhands:` entry (`enabled: false`, description, `env: OPENHANDS_HOME`, `OPENHANDS_PORT`, `OPENHANDS_TRAEFIK`)
    - `README.md` — add a `#### setup-openhands.sh` section describing the task and its environment variables
    - `CONTEXT.md` — add **openhands** to the Services terms list
-   - `skills/machine-setup-automation-assistant/SKILL.md` — add `setup-openhands` to the **AI Agents** task table (line ~134)
+   - `skills/kwisatz-assistant/SKILL.md` — add `setup-openhands` to the **AI Agents** task table (line ~134)
 
 ---
 
@@ -530,4 +530,4 @@ All URLs consulted during research for this plan, organized by category.
 | templates/omnigent/docker-compose.traefik.yml | Reference for template-based compose generation |
 | templates/omnigent/docker-compose.direct.yml | Reference for direct-mode template |
 | machine-config.yml.example | Registration entry for new tasks |
-| skills/machine-setup-automation-assistant/SKILL.md | Task table to update (AI Agents category) |
+| skills/kwisatz-assistant/SKILL.md | Task table to update (AI Agents category) |

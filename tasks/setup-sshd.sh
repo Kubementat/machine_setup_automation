@@ -182,7 +182,7 @@ fi
 
 _dropin_tmp="$(mktemp)"
 {
-  printf '# Managed by machine_setup_automation setup-sshd.sh — do not edit by hand.\n'
+  printf '# Managed by kwisatz setup-sshd.sh — do not edit by hand.\n'
   printf 'PubkeyAuthentication yes\n'
   printf 'PasswordAuthentication %s\n' "${PASSWORD_AUTH}"
   for p in "${ports[@]}"; do printf 'Port %s\n' "$p"; done

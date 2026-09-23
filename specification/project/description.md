@@ -2,7 +2,7 @@
 
 ## What It Does
 
-Machine Setup Automation is a collection of modular, idempotent Bash scripts that automate the provisioning of Ubuntu machines for LLM (Large Language Model) development and server workflows. A single entrypoint script installs and configures an entire stack — from system packages and SSH hardening to Docker, LM Studio, Forgejo, and firewall rules.
+`kwisatz` is a collection of modular, idempotent Bash scripts that automate the provisioning of Ubuntu machines for LLM (Large Language Model) development and server workflows. A single entrypoint script installs and configures an entire stack — from system packages and SSH hardening to Docker, LM Studio, Forgejo, and firewall rules.
 
 ## Problem It Solves
 
@@ -19,7 +19,7 @@ Setting up a development or server machine for LLM work is tedious, error-prone,
 - **One entrypoints** — `run-setup.sh`
 - **Environment-variable configuration** — All tunable values (ports, versions, feature flags) have sensible defaults and can be overridden without editing scripts.
 - **Core provisioning** — System packages, SSH (custom port, key-only auth), Docker, LM Studio (with optional `lms` CLI), UFW firewall.
-- **Optional components** — Kubernetes (k3s + k9s), Brave browser, VS Code, ROCm (AMD GPU), Samba file sharing, Opencode server, Forgejo (self-hosted Git), AnyDesk, Excalidraw.
+- **Optional components** — Brave browser, VS Code, ROCm (AMD GPU), Samba file sharing, Opencode server, Forgejo (self-hosted Git), AnyDesk, Excalidraw, ...
 - **Utility scripts** — SSH tunnel helper for forwarding local ports to remote services (LM Studio, OpenWebUI, Opencode).
 
 ## Out of Scope

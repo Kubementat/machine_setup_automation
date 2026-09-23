@@ -336,7 +336,7 @@ ufw_add_rule "$OPENHANDS_PORT" tcp "OpenHands Agent Canvas"   # default port 800
 | `machine-config.yml.example` (`setup-openhands:` entry) | `description: Install OpenHands Agent Canvas (AI coding agent control center)`; `env:` → `OPENHANDS_HOME: /srv/openhands`, `OPENHANDS_PORT: '8000'`, `OPENHANDS_TRAEFIK: 'false'`. |
 | `README.md` (`#### setup-openhands.sh`) | Rewrite: "Deploys OpenHands Agent Canvas — all-in-one container (UI at `/canvas`, port 8000), no docker.sock"; new env var list (`OPENHANDS_IMAGE` default `ghcr.io/openhands/agent-canvas`, `OPENHANDS_IMAGE_TAG` default `1.13.0`, `OPENHANDS_PORT` 8000, `OPENHANDS_PROJECTS`); features: no docker.sock, `/projects` mount, automations, health check on `/canvas`, UFW (direct), V1-migration note. |
 | `CONTEXT.md` (Services) | "openhands — AI software developer agent (Agent Canvas: all-in-one Docker container with web UI at `/canvas`, agent execution, and scheduled automations)". |
-| `skills/machine-setup-automation-assistant/SKILL.md` (task table, ~line 134) | Keep `setup-openhands` row; update its one-line description to mention Agent Canvas / port 8000. |
+| `skills/kwisatz-assistant/SKILL.md` (task table, ~line 134) | Keep `setup-openhands` row; update its one-line description to mention Agent Canvas / port 8000. |
 
 ## Verification / Testing Checklist
 

@@ -258,7 +258,7 @@ against a virt-runner VM** (same tooling the harness uses):
 
 ```console
 $ virt-runner create --name mas-bktest --json        # note .vm.ip
-$ scp -r repo → /home/ubuntu/machine_setup_automation
+$ scp -r repo → /home/ubuntu/kwisatz
 # pre-step (satisfies mount + fstab checks; tmpfs is a valid findmnt target):
 $ sudo mkdir -p /srv/backups
 $ sudo mount -t tmpfs -o size=512m tmpfs /srv/backups

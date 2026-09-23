@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # =============================================================================
-# run-tests.sh — In-VM test runner for machine_setup_automation
+# run-tests.sh — In-VM test runner for kwisatz
 # =============================================================================
 #
 # PURPOSE:

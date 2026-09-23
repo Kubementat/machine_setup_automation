@@ -193,7 +193,7 @@ flowchart TD
     D2 -- "SSH up" --> E
     D2 -- "still down" --> D4
     D4 --> X1["exit 1 + create.json kept in report dir"]
-    D -- "IP acquired + SSH verified" --> E["2 · scp: repo → VM:<br/>/home/&lt;user&gt;/machine_setup_automation<br/>+ test config → /tmp/test-config.yml"]
+    D -- "IP acquired + SSH verified" --> E["2 · scp: repo → VM:<br/>/home/&lt;user&gt;/kwisatz<br/>+ test config → /tmp/test-config.yml"]
     E -- "scp/ssh failed" --> XC["trap: virt-runner destroy · exit 1"]
     E --> F["3 · Bootstrap on VM:<br/>sudo apt install yq jq"]
     F --> G["4 · Remote runner (single SSH session):<br/>tests/remote/run-tests.sh"]
@@ -232,7 +232,7 @@ Step by step:
    (slow first boot), the harness retries SSH for up to 5 more minutes
    before giving up.
 3. **Copy.** The whole repository is copied with `scp -r` to
-   `/home/<user>/machine_setup_automation` on the VM (including `tasks/`,
+   `/home/<user>/kwisatz` on the VM (including `tasks/`,
    `lib/`, `templates/`, `run-setup.sh`), plus the active test config to
    `/tmp/test-config.yml` (also covers generated/custom configs outside the
    repo).

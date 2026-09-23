@@ -69,7 +69,7 @@ llama-swap" is achieved by running this tool (see Decision 31).
 | `.gitignore` | Add `models.yml` (contains API keys) (edit) |
 | `README.md` | Document catalog workflow (copy `.default` → `models.yml`, edit, run; the committed default catalog is a real, downloadable local model set) plus the two-stage story (fresh box: the local model works out of the box; remote providers with real keys are added to `models.yml` and the tool re-run) and the deprovisioning note (removing a model from the catalog does **not** remove its entries from agent/llama-swap configs — edit those manually) (edit) |
 | `CONTEXT.md` | Add "model catalog" domain term (edit) |
-| `skills/machine-setup-automation-assistant/SKILL.md` | Mention `sync-models` in the task list (edit) |
+| `skills/kwisatz-assistant/SKILL.md` | Mention `sync-models` in the task list (edit) |
 | `AUTOMATIONS.md` | Add a `sync-models.py` entry under "AI & LLM Services" (edit) |
 | `AGENTS.md` | Add the Python lint gate (`ruff`, fallback `python3 -m py_compile`) to the Linting section (edit) |
 | `machine-config.yml.example` | Add `sync-models` with `enabled: false` and a comment that orchestrator dispatch of the `.py` entrypoint is a separate follow-up (edit) |

@@ -46,7 +46,7 @@ ${BOLD}Options:${RESET}
   -h, --help    Show this help and exit
 
 ${BOLD}Environment variables${RESET} (all optional):
-  ADR_REPO_URL        Git repository URL (default: https://github.com/julweber/agent-docker-runner.git)
+  ADR_REPO_URL        Git repository URL (default: https://github.com/Kubementat/agent-docker-runner.git)
   ADR_INSTALL_DIR     Clone destination (default: $HOME/tools/agent-docker-runner)
   ADR_BUILD_AGENTS    Comma-separated agents to build
                       (default: pi,opencode,claude,codex)
@@ -69,7 +69,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Configuration
-ADR_REPO_URL="${ADR_REPO_URL:-https://github.com/julweber/agent-docker-runner.git}"
+ADR_REPO_URL="${ADR_REPO_URL:-https://github.com/Kubementat/agent-docker-runner.git}"
 ADR_INSTALL_DIR="${ADR_INSTALL_DIR:-${HOME}/tools/agent-docker-runner}"
 ADR_BUILD_AGENTS="${ADR_BUILD_AGENTS:-pi,opencode,claude,codex}"
 

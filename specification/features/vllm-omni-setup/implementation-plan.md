@@ -728,7 +728,7 @@ git commit -m "chore: register setup-vllm-omni in machine-config example"
 
 **Files:**
 - Modify: `README.md`
-- Modify: `skills/machine-setup-automation-assistant/SKILL.md`
+- Modify: `skills/kwisatz-assistant/SKILL.md`
 - Modify: `CONTEXT.md`
 
 **Interfaces:** none consumed by later tasks (documentation only).
@@ -753,7 +753,7 @@ Deploys **vLLM-Omni** — the official vLLM sub-project for omni-modality servin
 
 - [ ] **Step 2: Add the script to the assistant skill's category table**
 
-In `skills/machine-setup-automation-assistant/SKILL.md`, in the "Service Categories" table, change the **AI / LLM** row's script list to include `setup-vllm-omni`:
+In `skills/kwisatz-assistant/SKILL.md`, in the "Service Categories" table, change the **AI / LLM** row's script list to include `setup-vllm-omni`:
 
 Find:
 ```markdown
@@ -780,7 +780,7 @@ Expected: no whitespace errors. Visually confirm the README subsection and table
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md skills/machine-setup-automation-assistant/SKILL.md CONTEXT.md
+git add README.md skills/kwisatz-assistant/SKILL.md CONTEXT.md
 git commit -m "docs: document setup-vllm-omni (README, assistant skill, CONTEXT)"
 ```
 
