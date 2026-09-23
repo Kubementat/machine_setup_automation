@@ -18,6 +18,10 @@
 #     ~/.claude.json rw (transcripts, credentials, settings);
 #     codex: ~/.codex rw (config.toml, auth.json, sessions, logs — and
 #     the binary itself for standalone installs); missing dirs skipped
+#   - skills/prompts/commands in the agent's state dirs are often
+#     symlinks into other home dirs (shared skill repos); their resolved
+#     targets are bound ro so they keep working in-sandbox (dangling
+#     links are skipped)
 #   - herdr socket bind-mounted rw (if present) + ALL HERDR_* env vars
 #     forwarded, so the agent's herdr state extension keeps working; asb
 #     exports HERDR_AGENT=<agent> on the host side so herdr maps the
@@ -93,6 +97,8 @@ Guarantees (v1):
     ~/.local/share/opencode, ~/.claude and ~/.claude.json (claude) and
     ~/.codex (codex, incl. its standalone binary) rw — agents write
     sessions/logs/credentials there; missing dirs are skipped
+  - symlinked skills/prompts/commands in those state dirs get their
+    resolved targets bound read-only (dangling links are skipped)
   - env is cleared; only HOME, PATH, TERM, LANG/LC_*, HERDR_* and
     --env vars are forwarded
   - herdr socket is bind-mounted rw (if present) and HERDR_* vars are
@@ -284,6 +290,54 @@ sandbox_env_kv() {
 }
 
 # ---------------------------------------------------------------------------
+# Agent state symlinks (skills/prompts pointing outside the mounted dirs)
+# ---------------------------------------------------------------------------
+
+# Skills/prompts/commands live in per-agent content dirs that are bind-mounted
+# for the agent's state (above). Their entries are often symlinks into other
+# home dirs (e.g. a shared skill repo). bwrap cannot resolve targets that are
+# not bound, so mount each distinct resolved target ro — dangling links
+# (target missing on the host) are skipped. Project-level dirs (.opencode/,
+# .claude/, .agents/ inside the repo) need no handling: they live inside the
+# workspace bind.
+STATE_CONTENT_DIRS=()
+case "$AGENT" in
+  pi)
+    STATE_CONTENT_DIRS=(
+      "$HOME/.pi/agent/skills" "$HOME/.pi/agent/prompts"
+      "$HOME/.agents/skills") ;;
+  opencode)
+    # global config dirs + the Claude/agent-compatible skill dirs opencode
+    # also scans
+    STATE_CONTENT_DIRS=(
+      "$HOME/.config/opencode/skills" "$HOME/.config/opencode/commands"
+      "$HOME/.claude/skills" "$HOME/.agents/skills") ;;
+  claude)
+    STATE_CONTENT_DIRS=(
+      "$HOME/.claude/skills" "$HOME/.claude/commands") ;;
+  codex)
+    STATE_CONTENT_DIRS=(
+      "$HOME/.codex/skills" "$HOME/.codex/prompts") ;;
+  sh) : ;;
+esac
+
+STATE_SYMLINK_TARGETS=()
+add_state_link_target() {
+  local t x
+  t="$(readlink -f -- "$1" 2>/dev/null)" || return 0
+  [[ -e "$t" ]] || return 0
+  for x in "${STATE_SYMLINK_TARGETS[@]}"; do
+    [[ "$x" == "$t" ]] && return 0
+  done
+  STATE_SYMLINK_TARGETS+=("$t")
+}
+for d in "${STATE_CONTENT_DIRS[@]}"; do
+  for f in "$d"/*; do
+    [[ -L "$f" ]] && add_state_link_target "$f"
+  done
+done
+
+# ---------------------------------------------------------------------------
 # Build the bwrap argv
 # ---------------------------------------------------------------------------
 
@@ -324,10 +378,18 @@ BWRAP_ARGV=(
   # RO_EXTRA_DIRS ro-bind of the exact binary dir layers on top)
   --bind-try "$HOME/.codex" "$HOME/.codex"
   --ro-bind-try "$HOME/.local/bin" "$HOME/.local/bin"
+  # shared agent-skill dir scanned by pi and opencode (Claude-compatible
+  # ~/.claude/skills is covered by the ~/.claude rw bind above)
+  --ro-bind-try "$HOME/.agents" "$HOME/.agents"
 )
 
 for d in "${RO_EXTRA_DIRS[@]}"; do
   BWRAP_ARGV+=(--ro-bind "$d" "$d")
+done
+
+# skills/prompts symlink targets (ro) — see add_state_link_target above
+for t in "${STATE_SYMLINK_TARGETS[@]}"; do
+  BWRAP_ARGV+=(--ro-bind-try "$t" "$t")
 done
 
 # herdr socket (rw) — skip cleanly when herdr is not installed/running
