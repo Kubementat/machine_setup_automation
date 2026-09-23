@@ -1,0 +1,17 @@
+[Unit]
+Description=Cap NVIDIA GPU clocks (DGX Spark power-spike mitigation)
+Documentation=https://forums.developer.nvidia.com/t/unlocking-the-power-of-the-spark-in-comfyui-no-crashes/360336
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Persistence mode keeps the driver loaded so clock settings survive idle periods.
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/usr/bin/nvidia-smi -lgc ${MEMSAFETY_GPU_CLOCK_MIN},${MEMSAFETY_GPU_CLOCK_MAX}
+# Reset to hardware defaults when the unit is stopped/disabled.
+ExecStop=/usr/bin/nvidia-smi -rgc
+
+[Install]
+WantedBy=multi-user.target
